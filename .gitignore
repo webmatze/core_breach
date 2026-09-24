@@ -1,0 +1,5 @@
+builds/
+logs/
+exceptions/
+.DS_Store
+errors/
