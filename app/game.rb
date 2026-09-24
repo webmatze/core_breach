@@ -192,10 +192,10 @@ class Game
     want_pitch = 0.0
     want_yaw = 0.0
     want_roll = 0.0
-    want_pitch += 1 if kb.up
-    want_pitch -= 1 if kb.down
-    want_yaw += 1 if kb.right
-    want_yaw -= 1 if kb.left
+    want_pitch += 1 if kb.up_arrow
+    want_pitch -= 1 if kb.down_arrow
+    want_yaw += 1 if kb.right_arrow
+    want_yaw -= 1 if kb.left_arrow
     want_roll += 1 if kb.e
     want_roll -= 1 if kb.q
     want_roll += 1 if pad.r1
