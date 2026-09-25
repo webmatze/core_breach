@@ -3,9 +3,9 @@
 class Ship
   RADIUS = 2.4
 
-  attr_accessor :pos, :vel, :right, :up, :fwd, :shields, :energy, :missiles,
-                :fire_cooldown, :missile_cooldown, :laser_side, :alive,
-                :dead_timer, :hit_flash, :spin
+  attr_accessor :vel, :shields, :energy, :missiles, :fire_cooldown, :missile_cooldown,
+                :laser_side, :alive, :dead_timer, :hit_flash, :spin
+  attr_reader :pose
 
   def initialize(pos)
     @shields = 100.0
@@ -15,11 +15,8 @@ class Ship
   end
 
   def respawn(pos)
-    @pos = pos.dup
+    @pose = D3D::Pose.new(pos, [0.0, 0.0, 1.0])
     @vel = [0.0, 0.0, 0.0]
-    @right = [1.0, 0.0, 0.0]
-    @up = [0.0, 1.0, 0.0]
-    @fwd = [0.0, 0.0, 1.0]
     @spin = [0.0, 0.0, 0.0] # pitch, yaw, roll velocity
     @fire_cooldown = 0
     @missile_cooldown = 0
@@ -29,10 +26,24 @@ class Ship
     @hit_flash = 0
   end
 
-  def orthonormalize!
-    @fwd = V.norm(@fwd)
-    @right = V.norm(V.cross(@up, @fwd))
-    @up = V.cross(@fwd, @right)
+  def pos
+    @pose.position
+  end
+
+  def pos=(p)
+    @pose.position = p
+  end
+
+  def right
+    @pose.right
+  end
+
+  def up
+    @pose.up
+  end
+
+  def fwd
+    @pose.fwd
   end
 end
 

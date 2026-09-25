@@ -34,15 +34,16 @@ Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down,
 
 | File | Contents |
 | --- | --- |
-| `app/renderer.rb` | Software 3D renderer |
-| `app/level.rb` | Cube grid, wall generation, collision, line of sight, doors |
+| `lib/d3d/` | Vendored copy of the [d3d](https://github.com/webmatze/d3d) engine (renderer, cell grid, 6DOF pose, meshes, automap). Don't edit here |
+| `app/level.rb` | The mine: wraps a `D3D::CellGrid` and adds doors, exit, spawns and materials |
 | `app/level_data.rb` | Mission layout, pickups and robot spawns |
-| `app/meshes.rb` | Robot, reactor and pickup models |
+| `app/meshes.rb` | Robot, reactor and pickup models (built with `D3D::FlatMesh`) |
 | `app/game.rb` | Flight, weapons, robot AI, reactor, HUD, menus |
-| `app/automap.rb` | 3D wireframe automap of explored areas |
 | `app/entities.rb` | Game object data holders |
-| `app/vec.rb` | Vector math |
+| `tools/sync_d3d.sh` | Copies the d3d engine into `lib/d3d` (default source `../d3d`) and records its commit in `lib/d3d/SOURCE` |
 | `tools/generate_assets.py` | Regenerates all textures (`sprites/game/`) and sounds (`sounds/`) |
+
+To update the engine, change it in the d3d repository, then run `tools/sync_d3d.sh`.
 
 ---
 
@@ -50,9 +51,11 @@ Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down,
 
 DragonRuby has no 3D pipeline, no depth buffer and no shaders. What it does have is the ability to draw a **2D triangle with any part of a texture mapped onto it** (`x/y`, `x2/y2`, `x3/y3` plus `source_x…source_y3`). The engine does all 3D math in Ruby on the CPU and ends each frame with a sorted list of those triangles. It's the same approach as mid-90s software renderers.
 
-## 1. The world is a grid of cubes (`app/level.rb`)
+The engine started in this game and now lives in the [d3d](https://github.com/webmatze/d3d) engine as its cell-grid renderer, vendored into `lib/d3d/`. The file references below point there.
 
-- The mine is a 48×16×48 grid of 10-unit cells, each either open or solid. Rooms and tunnels are "carved" out of solid rock with box ranges in `app/level_data.rb`, and pillars and boulders are filled back in.
+## 1. The world is a grid of cubes (`D3D::CellGrid`, `lib/d3d/cell_grid.rb`)
+
+- The mine (`app/level.rb`) is a 48×16×48 grid of 10-unit cells, each either open or solid. Rooms and tunnels are "carved" out of solid rock with box ranges in `app/level_data.rb`, and pillars and boulders are filled back in.
 - `roughen` randomly raises floor cells and drops ceiling cells to make the caverns look less boxy. It uses a fixed-seed random number generator, so the level is identical every run, and it never touches cells next to doors or openings in the floor.
 - **Wall generation:** every face where an open cell touches a solid one becomes a wall quad. Each quad stores its corner `c0`, two edge vectors (`eu`, `ev`), an inward-facing normal, a texture and a precomputed tint. The tint is the room's light colour times a per-direction shade: floors brightest, ceilings darkest, which gives cheap depth cues.
 - Faces are rebuilt only when the geometry changes, i.e. when a door opens.
@@ -61,7 +64,7 @@ DragonRuby has no 3D pipeline, no depth buffer and no shaders. What it does have
   - **Line of sight:** sample points along a line and check whether each lands in an open cell.
   - **Doors:** solid cells with a special texture that turn into open cells.
 
-## 2. Camera and transform
+## 2. Camera and transform (`D3D::Pose`, `lib/d3d/pose.rb`)
 
 - The camera is a position plus three orthonormal vectors: right, up and forward. Rotation isn't stored as angles, which avoids gimbal lock and allows true 6-degrees-of-freedom flight.
 - **Yaw, pitch and roll** each rotate one pair of those vectors around the third (`V.rotate_pair`). The vectors are re-orthonormalized every frame with cross products so rounding errors don't build up.
@@ -69,7 +72,7 @@ DragonRuby has no 3D pipeline, no depth buffer and no shaders. What it does have
 - **Perspective projection:** `sx = 640 + cx·f/cz`, `sy = 360 + cy·f/cz` with a focal length of 620, which gives roughly a 92° horizontal field of view.
 - **Linearity trick:** a wall is transformed once as its corner plus two edge vectors. Any point on the wall in camera space is then `o + a·u + b·v`, so subdividing a wall costs additions, not new matrix math.
 
-## 3. Deciding what to draw: flood-fill visibility
+## 3. Deciding what to draw: flood-fill visibility (`CellGrid#visible_cells`)
 
 `visible_cells` does a breadth-first flood fill through open cells, starting from the camera's cell. It crosses into a neighbour only if:
 
@@ -80,7 +83,7 @@ The frustum test checks each of the portal's 4 corners against the near, left, r
 
 This is a light version of portal rendering. It skips everything behind you and whole areas reachable only through off-screen tunnels. A distance limit is used instead of a step-count limit, because a step-count limit left holes in large rooms.
 
-## 4. Drawing walls (`draw_face`)
+## 4. Drawing walls (`SceneRenderer#draw_face`, `lib/d3d/scene_renderer.rb`)
 
 For each face of each visible cell, in order:
 
@@ -91,7 +94,7 @@ For each face of each visible cell, in order:
 5. **Projection and fan triangulation:** each clipped polygon becomes a fan of triangle sprites, with texture coordinates in texels of the 128×128 texture.
 6. **Seam padding (`pad!`):** projected vertices are pushed about 0.7 px out from the polygon's centre so neighbouring triangles overlap. This hides hairline cracks from rasterization and from edges where neighbouring walls are split into different numbers of pieces.
 
-## 5. Lighting (`light_at`)
+## 5. Lighting (`SceneRenderer#light_at`)
 
 Colour is computed once per sub-quad (flat shading) and applied through the sprite's `r/g/b` tint, which multiplies the texture:
 
@@ -103,7 +106,7 @@ Colour is computed once per sub-quad (flat shading) and applied through the spri
 
 ## 6. Objects: meshes and billboards
 
-- **Meshes** (`app/meshes.rb`) are small vertex/triangle lists built from helpers such as `box` and `bipyramid`.
+- **Meshes** (`D3D::FlatMesh` in `lib/d3d/flat_mesh.rb`; the game's models are in `app/meshes.rb`) are small vertex/triangle lists built from helpers such as `box` and `bipyramid`.
   - Winding is fixed automatically so normals point outward, away from each part's centre.
   - Fins and blades are marked double-sided; eyes and the reactor core are "emissive" (unlit).
   - Triangles are drawn with a tinted 8×8 white texture, with a camera-facing shade similar to Lambert lighting.
@@ -118,7 +121,7 @@ Painter's sorting can fail when a robot sits behind a wall corner, so robots and
 
 **Screen shake** jitters the camera position and roll before rendering, rather than shifting the image.
 
-## 8. The automap (`app/automap.rb`)
+## 8. The automap (`D3D::GridMap`, `lib/d3d/grid_map.rb`)
 
 - Every frame, the cells the renderer's flood fill found visible within 100 units are marked as explored, so the map only shows what you've actually seen.
 - Each explored cell adds the outline edges of its walls as 3D line segments. An edge is skipped when the wall continues flat into the neighbouring cell, so big walls show up as clean outlines instead of a grid of squares.

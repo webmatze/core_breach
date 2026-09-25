@@ -1,10 +1,18 @@
-require 'app/vec.rb'
+D3D_ROOT = 'lib/d3d' unless Object.const_defined?(:D3D_ROOT)
+require 'lib/d3d/d3d.rb'
+
+# Short names for the engine helpers used throughout the game.
+V = D3D::V unless Object.const_defined?(:V)
+Lcg = D3D::Lcg unless Object.const_defined?(:Lcg)
+
+def clamp(v, lo, hi)
+  D3D.clamp(v, lo, hi)
+end
+
 require 'app/level.rb'
 require 'app/level_data.rb'
-require 'app/renderer.rb'
 require 'app/meshes.rb'
 require 'app/entities.rb'
-require 'app/automap.rb'
 require 'app/game.rb'
 
 def tick args
@@ -16,5 +24,6 @@ end
 def reset args
   $game = nil
 end
+
 
 
