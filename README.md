@@ -23,11 +23,12 @@ The project uses DragonRuby Pro 7.13 through [Smaug](https://github.com/ereborst
 | Q / E | Roll |
 | Left click / Space | Lasers |
 | Right click / Ctrl | Concussion missile |
+| Tab | Automap (mouse / arrows / A D rotate, W S / wheel zoom) |
 | I | Invert mouse |
 | Esc | Pause |
 | F1 | Show fps and triangle count |
 
-Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down.
+Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down, Select for the automap.
 
 ## Project layout
 
@@ -38,6 +39,7 @@ Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down.
 | `app/level_data.rb` | Mission layout, pickups and robot spawns |
 | `app/meshes.rb` | Robot, reactor and pickup models |
 | `app/game.rb` | Flight, weapons, robot AI, reactor, HUD, menus |
+| `app/automap.rb` | 3D wireframe automap of explored areas |
 | `app/entities.rb` | Game object data holders |
 | `app/vec.rb` | Vector math |
 | `tools/generate_assets.py` | Regenerates all textures (`sprites/game/`) and sounds (`sounds/`) |
@@ -116,7 +118,15 @@ Painter's sorting can fail when a robot sits behind a wall corner, so robots and
 
 **Screen shake** jitters the camera position and roll before rendering, rather than shifting the image.
 
-## 8. Assets without art files
+## 8. The automap (`app/automap.rb`)
+
+- Every frame, the cells the renderer's flood fill found visible within 100 units are marked as explored, so the map only shows what you've actually seen.
+- Each explored cell adds the outline edges of its walls as 3D line segments. An edge is skipped when the wall continues flat into the neighbouring cell, so big walls show up as clean outlines instead of a grid of squares.
+- Edges are de-duplicated by a key built from their two grid corners. Door and exit edges override plain wall edges so they always show in their colour.
+- The map is drawn with an orbit camera around the ship using the same projection as the main renderer, with near-plane clipping per line and brightness fading with depth. The ship, seen keys and the reactor are drawn as small wireframe markers.
+- The game pauses while the map is open. When a door has opened since the last look, the edges are rebuilt from the explored cells.
+
+## 9. Assets without art files
 
 `tools/generate_assets.py` uses only the Python standard library to write:
 
@@ -129,7 +139,7 @@ Regenerate them with:
 python3 tools/generate_assets.py
 ```
 
-## 9. DragonRuby details that mattered
+## 10. DragonRuby details that mattered
 
 - Integer `/` returns a float in DragonRuby. Use `idiv` for integer division.
 - `keyboard.up`/`down`/`left`/`right` also match W/S/A/D. Use the `*_arrow` variants when the arrow keys need their own meaning.

@@ -156,6 +156,10 @@ class Level
     !open?((p[0] / CS).floor, (p[1] / CS).floor, (p[2] / CS).floor)
   end
 
+  def tint_of(n)
+    @tint[n]
+  end
+
   def tint_at(p)
     i, j, k = cell_of(p)
     return [0.5, 0.5, 0.5] unless open?(i, j, k)

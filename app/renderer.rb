@@ -15,7 +15,7 @@ class Renderer
   GLOW       = 'sprites/game/glow.png'
 
   attr_accessor :level
-  attr_reader :triangle_count
+  attr_reader :triangle_count, :last_visible
 
   def initialize(level)
     @level = level
@@ -133,7 +133,8 @@ class Renderer
 
   def draw_level
     faces = @level.faces
-    visible_cells.each do |n|
+    @last_visible = visible_cells
+    @last_visible.each do |n|
       list = faces[n]
       next unless list
       list.each { |f| draw_face(f) }

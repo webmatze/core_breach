@@ -4,6 +4,7 @@ require 'app/level_data.rb'
 require 'app/renderer.rb'
 require 'app/meshes.rb'
 require 'app/entities.rb'
+require 'app/automap.rb'
 require 'app/game.rb'
 
 def tick args
@@ -15,4 +16,5 @@ end
 def reset args
   $game = nil
 end
+
 

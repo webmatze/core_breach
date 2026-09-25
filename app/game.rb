@@ -55,6 +55,7 @@ class Game
       end
     end
     @reactor = Reactor.new(@level.reactor_pos)
+    @automap = Automap.new(@level)
   end
 
   # Moves a spawn point out of rock if level roughening buried it.
@@ -90,10 +91,15 @@ class Game
       if kb.key_down.escape || args.inputs.controller_one.key_down.start
         @state = :paused
         grab_mouse(false)
+      elsif kb.key_down.tab || args.inputs.controller_one.key_down.select
+        @state = :automap
+        @automap.open(@ship)
       else
         update_play
       end
-      render_play
+      render_play if @state != :automap
+    when :automap
+      tick_automap
     when :paused
       render_play
       render_pause
@@ -139,6 +145,7 @@ class Game
       ['Q E', 'roll'],
       ['Left click / Space', 'lasers'],
       ['Right click / Ctrl', 'concussion missile'],
+      ['Tab', 'automap'],
       ['I', 'invert mouse'],
       ['Esc', 'pause']
     ]
@@ -723,7 +730,44 @@ class Game
       right, up = V.rotate_pair(right, up, (rand - 0.5) * @shake * 0.04)
     end
     render_world(pos, right, up, fwd)
+    @automap.explore(@renderer.last_visible, pos)
     render_hud
+  end
+
+  # ================================================================= automap
+
+  def tick_automap
+    kb = args.inputs.keyboard
+    pad = args.inputs.controller_one
+    if kb.key_down.tab || kb.key_down.escape || pad.key_down.select || pad.key_down.start
+      @state = :playing
+      render_play
+      return
+    end
+    @automap.update(args.inputs)
+
+    markers = []
+    if !@reactor.destroyed && @automap.explored?(@reactor.pos)
+      markers << [@reactor.pos, [255, 150, 40], 6]
+    end
+    @pickups.each do |pk|
+      next unless pk.kind == :blue_key || pk.kind == :red_key
+      next unless @automap.explored?(pk.pos)
+      markers << [pk.pos, pk.kind == :blue_key ? [70, 130, 255] : [255, 70, 70], 2.5]
+    end
+    @automap.render(args.outputs, @ship, markers)
+
+    out = args.outputs.primitives
+    label(out, 640, 700, 'AUTOMAP', 30, [255, 230, 60], 0.5)
+    label(out, 640, 22, 'Mouse / arrows / A D rotate    W S / wheel zoom    TAB close', 18, [170, 170, 190], 0.5)
+    label(out, 20, 700, 'You', 18, [255, 230, 60])
+    label(out, 20, 676, 'Blue door / key', 18, Automap::DOOR_COLORS[:blue])
+    label(out, 20, 652, 'Red door / key', 18, Automap::DOOR_COLORS[:red])
+    label(out, 20, 628, 'Escape hatch', 18, Automap::DOOR_COLORS[:exit])
+    label(out, 20, 604, 'Reactor', 18, [255, 150, 40]) unless @reactor.destroyed
+    if @countdown
+      label(out, 1260, 700, format('SELF DESTRUCT  %02d', @countdown.ceil), 24, [255, 60, 40], 1)
+    end
   end
 
   def render_world(pos, right, up, fwd)
