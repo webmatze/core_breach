@@ -13,6 +13,10 @@ class Game
   MISSILE_SPLASH  = 16.0
   PICKUP_RADIUS   = 5.0
   TITLE           = 'CORE BREACH'
+  MAP_COLORS      = { blue: [70, 130, 255], red: [255, 70, 70], exit: [90, 255, 120] }
+
+  # What the renderer and automap need from a camera: position + basis vectors.
+  View = Struct.new(:position, :right, :up, :fwd)
 
   attr_accessor :args
 
@@ -28,7 +32,10 @@ class Game
 
   def setup_level
     @level = Level.new
-    @renderer = Renderer.new(@level)
+    @renderer = D3D::SceneRenderer.new(
+      focal: 620, near: 0.4, fog: 140, materials: Level::MATERIALS,
+      white_path: 'sprites/game/white.png', glow_path: 'sprites/game/glow.png'
+    )
     @ship = Ship.new(@level.player_start)
     @lives = 3
     @score = 0
@@ -55,7 +62,13 @@ class Game
       end
     end
     @reactor = Reactor.new(@level.reactor_pos)
-    @automap = Automap.new(@level)
+    grid = @level.grid
+    exits = @level.exit_cells
+    @automap = D3D::GridMap.new(grid, edge_color: lambda { |n, tag|
+      next MAP_COLORS[tag] if tag
+      next MAP_COLORS[:exit] if exits[n]
+      grid.tint_of(n).map { |t| clamp(t * 190, 40, 230) }
+    })
   end
 
   # Moves a spawn point out of rock if level roughening buried it.
@@ -93,7 +106,7 @@ class Game
         grab_mouse(false)
       elsif kb.key_down.tab || args.inputs.controller_one.key_down.select
         @state = :automap
-        @automap.open(@ship)
+        @automap.open(@ship.pose)
       else
         update_play
       end
@@ -222,10 +235,7 @@ class Game
     yaw += mdx * MOUSE_SENS
     pitch += mdy * MOUSE_SENS * (@invert_mouse ? -1 : 1)
 
-    s.fwd, s.right = V.rotate_pair(s.fwd, s.right, yaw) if yaw != 0
-    s.fwd, s.up = V.rotate_pair(s.fwd, s.up, pitch) if pitch != 0
-    s.up, s.right = V.rotate_pair(s.up, s.right, roll) if roll != 0
-    s.orthonormalize!
+    s.pose.yaw!(yaw).pitch!(pitch).roll!(roll).orthonormalize!
 
     # --- translation
     thrust = 0.0
@@ -755,15 +765,15 @@ class Game
       next unless @automap.explored?(pk.pos)
       markers << [pk.pos, pk.kind == :blue_key ? [70, 130, 255] : [255, 70, 70], 2.5]
     end
-    @automap.render(args.outputs, @ship, markers)
+    @automap.render(args.outputs, @ship.pose, markers)
 
     out = args.outputs.primitives
     label(out, 640, 700, 'AUTOMAP', 30, [255, 230, 60], 0.5)
     label(out, 640, 22, 'Mouse / arrows / A D rotate    W S / wheel zoom    TAB close', 18, [170, 170, 190], 0.5)
     label(out, 20, 700, 'You', 18, [255, 230, 60])
-    label(out, 20, 676, 'Blue door / key', 18, Automap::DOOR_COLORS[:blue])
-    label(out, 20, 652, 'Red door / key', 18, Automap::DOOR_COLORS[:red])
-    label(out, 20, 628, 'Escape hatch', 18, Automap::DOOR_COLORS[:exit])
+    label(out, 20, 676, 'Blue door / key', 18, MAP_COLORS[:blue])
+    label(out, 20, 652, 'Red door / key', 18, MAP_COLORS[:red])
+    label(out, 20, 628, 'Escape hatch', 18, MAP_COLORS[:exit])
     label(out, 20, 604, 'Reactor', 18, [255, 150, 40]) unless @reactor.destroyed
     if @countdown
       label(out, 1260, 700, format('SELF DESTRUCT  %02d', @countdown.ceil), 24, [255, 60, 40], 1)
@@ -783,11 +793,11 @@ class Game
     lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(8)
 
     r = @renderer
-    r.begin_frame(pos, right, up, fwd, lights, boost)
-    r.draw_level
+    r.begin_frame(View.new(pos, right, up, fwd), lights: lights, ambient_boost: boost)
+    r.draw_grid(@level.grid)
 
     @robots.each do |rb|
-      next unless V.dist2(rb.pos, pos) < Renderer::FOG**2
+      next unless V.dist2(rb.pos, pos) < r.fog**2
       next unless @level.los?(pos, rb.pos, 3.0)
       rgt, u = V.basis_from_forward(rb.fwd)
       flash = rb.hit_flash > 0 ? 0.7 : 0.0
