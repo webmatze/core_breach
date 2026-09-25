@@ -41,6 +41,8 @@ module D3D
       [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]],
       [[0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]]
     ]
+    # PORTALS flattened to [ox, oy, oz] triples at (dir * 4 + corner) * 3.
+    PORTAL_OFFSETS = PORTALS.flatten
 
     attr_reader :nx, :ny, :nz, :cell_size, :cells, :faces, :blockers
 
@@ -62,7 +64,14 @@ module D3D
       @stamp = 0
       gp = (nx + 1) * (ny + 1) * (nz + 1)
       @gp_stamp = Array.new(gp, 0)
-      @gp_cam = Array.new(gp)
+      @gp_x = Array.new(gp)
+      @gp_y = Array.new(gp)
+      @gp_z = Array.new(gp)
+      # Flat index offset to the neighbour in DIRS[n].
+      @dir_off = [-1, 1, -nx, nx, -nx * ny, nx * ny]
+      # Grid point index offset of each PORTALS corner, flattened (dir * 4 + corner).
+      @portal_goff = []
+      PORTALS.each { |corners| corners.each { |o| @portal_goff << o[0] + (nx + 1) * (o[1] + (ny + 1) * o[2]) } }
     end
 
     # ----------------------------------------------------------- addressing
@@ -274,6 +283,10 @@ module D3D
     # Breadth first walk through open cells starting at the renderer's camera,
     # crossing only cell boundaries (portals) that are inside the view frustum
     # and within fog distance. Returns the flat indices of the cells reached.
+    #
+    # Hot path: works on flat cell indices with parallel i/j/k queues, and the
+    # neighbour, distance and portal tests are inlined. Grid corners are
+    # transformed to camera space at most once per pass (gp_x/gp_y/gp_z cache).
     def visible_cells(renderer)
       @stamp += 1
       stamp = @stamp
@@ -284,35 +297,114 @@ module D3D
       pz = cam[2]
       max_d2 = (renderer.fog + cs)**2
       nx = @nx
-      nxy = @nx * @ny
+      ny = @ny
+      nz = @nz
+      nxy = nx * ny
       ci = (px / cs).floor
       cj = (py / cs).floor
       ck = (pz / cs).floor
-      return [] unless ci >= 0 && cj >= 0 && ck >= 0 && ci < @nx && cj < @ny && ck < @nz
-      queue = [[ci, cj, ck]]
-      @visited[ci + nx * cj + nxy * ck] = stamp
+      return [] unless ci >= 0 && cj >= 0 && ck >= 0 && ci < nx && cj < ny && ck < nz
+      tx = renderer.tan_x
+      ty = renderer.tan_y
+      ntx = -tx
+      nty = -ty
+      gnx = nx + 1
+      gnxy = gnx * (ny + 1)
+      dir_off = @dir_off
+      pgoff = @portal_goff
+      po = PORTAL_OFFSETS
+      cells = @cells
+      visited = @visited
+      gp_stamp = @gp_stamp
+      gp_x = @gp_x
+      gp_y = @gp_y
+      gp_z = @gp_z
+      n0 = ci + nx * cj + nxy * ck
+      qn = [n0]
+      qi = [ci]
+      qj = [cj]
+      qk = [ck]
+      visited[n0] = stamp
       result = []
       head = 0
-      cells = @cells
-      while head < queue.size
-        i, j, k = queue[head]
+      while head < qn.size
+        n = qn[head]
+        i = qi[head]
+        j = qj[head]
+        k = qk[head]
         head += 1
-        n = i + nx * j + nxy * k
         result << n if cells[n]
-        DIRS.each_with_index do |d, di|
-          ni = i + d[0]
-          nj = j + d[1]
-          nk = k + d[2]
-          next unless open?(ni, nj, nk)
-          m = ni + nx * nj + nxy * nk
-          next if @visited[m] == stamp
-          ddx = (ni + 0.5) * cs - px
-          ddy = (nj + 0.5) * cs - py
-          ddz = (nk + 0.5) * cs - pz
-          next if ddx * ddx + ddy * ddy + ddz * ddz > max_d2
-          next unless portal_visible?(renderer, i, j, k, di, stamp)
-          @visited[m] = stamp
-          queue << [ni, nj, nk]
+        ex = (i + 0.5) * cs - px
+        ey = (j + 0.5) * cs - py
+        ez = (k + 0.5) * cs - pz
+        ex2 = ex * ex
+        ey2 = ey * ey
+        ez2 = ez * ez
+        g0 = i + gnx * j + gnxy * k
+        di = 0
+        while di < 6
+          ni = i
+          nj = j
+          nk = k
+          if di < 2
+            ni = di == 0 ? i - 1 : i + 1
+            inb = ni >= 0 && ni < nx
+          elsif di < 4
+            nj = di == 2 ? j - 1 : j + 1
+            inb = nj >= 0 && nj < ny
+          else
+            nk = di == 4 ? k - 1 : k + 1
+            inb = nk >= 0 && nk < nz
+          end
+          m = n + dir_off[di]
+          if inb && cells[m] && visited[m] != stamp
+            if di < 2
+              dd = (ni + 0.5) * cs - px
+              d2 = dd * dd + ey2 + ez2
+            elsif di < 4
+              dd = (nj + 0.5) * cs - py
+              d2 = ex2 + dd * dd + ez2
+            else
+              dd = (nk + 0.5) * cs - pz
+              d2 = ex2 + ey2 + dd * dd
+            end
+            unless d2 > max_d2
+              # Portal test: reject only if all four corners are behind the
+              # eye or all outside the same frustum side plane.
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = di * 4
+              qe = q + 4
+              while q < qe
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  v = renderer.to_cam((i + po[o]) * cs, (j + po[o + 1]) * cs, (k + po[o + 2]) * cs)
+                  cx = gp_x[g] = v[0]
+                  cy = gp_y[g] = v[1]
+                  cz = gp_z[g] = v[2]
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << ni
+                qj << nj
+                qk << nk
+              end
+            end
+          end
+          di += 1
         end
       end
       result
@@ -358,32 +450,6 @@ module D3D
       shade = @dir_shade[dir]
       CellFace.new(c[3], c0, V.sub(c[1], c0), V.sub(c[2], c0), material,
                    [tint[0] * shade, tint[1] * shade, tint[2] * shade], n)
-    end
-
-    # Camera space position of grid corner (i, j, k), cached per visibility pass.
-    def grid_point(renderer, i, j, k, stamp)
-      g = i + (@nx + 1) * (j + (@ny + 1) * k)
-      return @gp_cam[g] if @gp_stamp[g] == stamp
-      @gp_stamp[g] = stamp
-      cs = @cell_size
-      @gp_cam[g] = renderer.to_cam(i * cs, j * cs, k * cs)
-    end
-
-    def portal_visible?(renderer, i, j, k, dir, stamp)
-      tx = renderer.tan_x
-      ty = renderer.tan_y
-      # Only reject portals fully behind the eye: one closer than the near
-      # plane can still be looked through.
-      behind = left = right = top = bottom = 0
-      PORTALS[dir].each do |o|
-        cx, cy, cz = grid_point(renderer, i + o[0], j + o[1], k + o[2], stamp)
-        behind += 1 if cz <= 0
-        right += 1 if cx > cz * tx
-        left += 1 if cx < -cz * tx
-        top += 1 if cy > cz * ty
-        bottom += 1 if cy < -cz * ty
-      end
-      behind < 4 && left < 4 && right < 4 && top < 4 && bottom < 4
     end
   end
 end

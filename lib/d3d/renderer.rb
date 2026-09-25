@@ -160,33 +160,40 @@ module D3D
 
           z_depth = (clip0z + clip1z + clip2z) * 0.333333
 
-          triangle = {
+          # Textured faces map their UVs (normalized 0-1 -> texture pixels).
+          # Solid colours are :solid sprites, which DragonRuby only draws as
+          # triangles when source coordinates are set. One hash literal with
+          # all keys: growing the hash key by key costs ~10% of the render.
+          if uv
+            ts = VOXEL_TEX_SIZE
+            path = face[:texture]
+            sx0 = uv[0][0] * ts
+            sy0 = uv[0][1] * ts
+            sx1 = uv[1][0] * ts
+            sy1 = uv[1][1] * ts
+            sx2 = uv[2][0] * ts
+            sy2 = uv[2][1] * ts
+          else
+            path = :solid
+            sx0 = 0
+            sy0 = 0
+            sx1 = 1
+            sy1 = 0
+            sx2 = 0
+            sy2 = 1
+          end
+
+          triangles << {
             x: screen0x, y: screen0y,
             x2: screen1x, y2: screen1y,
             x3: screen2x, y3: screen2y,
             z_depth: z_depth,
-            r: r,
-            g: g,
-            b: b,
-            a: face[:a]
+            r: r, g: g, b: b, a: face[:a],
+            path: path,
+            source_x: sx0, source_y: sy0,
+            source_x2: sx1, source_y2: sy1,
+            source_x3: sx2, source_y3: sy2
           }
-
-          # Add texture and UV coordinates if present, otherwise use solid
-          if uv
-            # Convert normalized UVs (0-1) to pixel coordinates
-            tex_size = VOXEL_TEX_SIZE
-            triangle[:path] = face[:texture]
-            triangle[:source_x] = uv[0][0] * tex_size
-            triangle[:source_y] = uv[0][1] * tex_size
-            triangle[:source_x2] = uv[1][0] * tex_size
-            triangle[:source_y2] = uv[1][1] * tex_size
-            triangle[:source_x3] = uv[2][0] * tex_size
-            triangle[:source_y3] = uv[2][1] * tex_size
-          else
-            triangle[:primitive_marker] = :solid
-          end
-
-          triangles << triangle
         end
 
         triangles.sort_by { |t| -t[:z_depth] }
@@ -244,7 +251,15 @@ module D3D
             z_depth: (a0[2] + b1[2] + c1[2]) * 0.333333,
             r: r, g: g, b: b, a: a
           }
-          triangle[:primitive_marker] = :solid if solid
+          if solid
+            triangle[:path] = :solid
+            triangle[:source_x] = 0
+            triangle[:source_y] = 0
+            triangle[:source_x2] = 1
+            triangle[:source_y2] = 0
+            triangle[:source_x3] = 0
+            triangle[:source_y3] = 1
+          end
           if path
             triangle[:path] = path
             triangle[:source_x] = a0[3]
@@ -361,6 +376,39 @@ module D3D
         cy = inv[3] * tx + inv[4] * ty + inv[5] * tz
         cz = inv[6] * tx + inv[7] * ty + inv[8] * tz
 
+        # Transform every vertex to clip space once; faces share vertices
+        # (up to 6 per sphere vertex), so per-corner transforms repeat work.
+        # The arrays are reused across models and frames.
+        xs = (@clip_x ||= [])
+        ys = (@clip_y ||= [])
+        zs = (@clip_z ||= [])
+        ws = (@clip_w ||= [])
+        m0 = mvp[0]
+        m1 = mvp[1]
+        m2 = mvp[2]
+        m3 = mvp[3]
+        m4 = mvp[4]
+        m5 = mvp[5]
+        m6 = mvp[6]
+        m7 = mvp[7]
+        m8 = mvp[8]
+        m9 = mvp[9]
+        m10 = mvp[10]
+        m11 = mvp[11]
+        m12 = mvp[12]
+        m13 = mvp[13]
+        m14 = mvp[14]
+        m15 = mvp[15]
+        vertices.each_with_index do |v, i|
+          x = v.x
+          y = v.y
+          z = v.z
+          xs[i] = m0 * x + m1 * y + m2 * z + m3
+          ys[i] = m4 * x + m5 * y + m6 * z + m7
+          zs[i] = m8 * x + m9 * y + m10 * z + m11
+          ws[i] = m12 * x + m13 * y + m14 * z + m15
+        end
+
         faces.each_with_index do |face, fi|
           vi = face[:v]
           v0 = vertices[vi[0]]
@@ -373,26 +421,21 @@ module D3D
           nz = fn[2]
           next if (cx - v0x) * nx + (cy - v0y) * ny + (cz - v0z) * nz <= 0
 
-          v1 = vertices[vi[1]]
-          v2 = vertices[vi[2]]
-
-          # Inline MVP transform for all 3 vertices
-          clip0x = mvp[0] * v0x + mvp[1] * v0y + mvp[2] * v0z + mvp[3]
-          clip0y = mvp[4] * v0x + mvp[5] * v0y + mvp[6] * v0z + mvp[7]
-          clip0z = mvp[8] * v0x + mvp[9] * v0y + mvp[10] * v0z + mvp[11]
-          w0 = mvp[12] * v0x + mvp[13] * v0y + mvp[14] * v0z + mvp[15]
-
-          v1x, v1y, v1z = v1.x, v1.y, v1.z
-          clip1x = mvp[0] * v1x + mvp[1] * v1y + mvp[2] * v1z + mvp[3]
-          clip1y = mvp[4] * v1x + mvp[5] * v1y + mvp[6] * v1z + mvp[7]
-          clip1z = mvp[8] * v1x + mvp[9] * v1y + mvp[10] * v1z + mvp[11]
-          w1 = mvp[12] * v1x + mvp[13] * v1y + mvp[14] * v1z + mvp[15]
-
-          v2x, v2y, v2z = v2.x, v2.y, v2.z
-          clip2x = mvp[0] * v2x + mvp[1] * v2y + mvp[2] * v2z + mvp[3]
-          clip2y = mvp[4] * v2x + mvp[5] * v2y + mvp[6] * v2z + mvp[7]
-          clip2z = mvp[8] * v2x + mvp[9] * v2y + mvp[10] * v2z + mvp[11]
-          w2 = mvp[12] * v2x + mvp[13] * v2y + mvp[14] * v2z + mvp[15]
+          i0 = vi[0]
+          i1 = vi[1]
+          i2 = vi[2]
+          clip0x = xs[i0]
+          clip0y = ys[i0]
+          clip0z = zs[i0]
+          w0 = ws[i0]
+          clip1x = xs[i1]
+          clip1y = ys[i1]
+          clip1z = zs[i1]
+          w1 = ws[i1]
+          clip2x = xs[i2]
+          clip2y = ys[i2]
+          clip2z = zs[i2]
+          w2 = ws[i2]
 
           # Skip triangles entirely behind the near plane or beyond the fog
           next if w0 < near && w1 < near && w2 < near
@@ -471,31 +514,37 @@ module D3D
 
           z_depth = (clip0z + clip1z + clip2z) * 0.333333
 
-          triangle = {
+          # Solid colours are :solid sprites with source coordinates (see
+          # render_voxel_world); one hash literal with all keys.
+          if uv0
+            path = texture
+            sx0 = uv0[0]
+            sy0 = uv0[1]
+            sx1 = uv1[0]
+            sy1 = uv1[1]
+            sx2 = uv2[0]
+            sy2 = uv2[1]
+          else
+            path = :solid
+            sx0 = 0
+            sy0 = 0
+            sx1 = 1
+            sy1 = 0
+            sx2 = 0
+            sy2 = 1
+          end
+
+          triangles << {
             x: screen0x, y: screen0y,
             x2: screen1x, y2: screen1y,
             x3: screen2x, y3: screen2y,
             z_depth: z_depth,
-            r: r,
-            g: g,
-            b: b,
-            a: color_a
+            r: r, g: g, b: b, a: color_a,
+            path: path,
+            source_x: sx0, source_y: sy0,
+            source_x2: sx1, source_y2: sy1,
+            source_x3: sx2, source_y3: sy2
           }
-
-          # Add texture and UV coordinates if present, otherwise use solid
-          if uv0
-            triangle[:path] = texture
-            triangle[:source_x] = uv0[0]
-            triangle[:source_y] = uv0[1]
-            triangle[:source_x2] = uv1[0]
-            triangle[:source_y2] = uv1[1]
-            triangle[:source_x3] = uv2[0]
-            triangle[:source_y3] = uv2[1]
-          else
-            triangle[:primitive_marker] = :solid
-          end
-
-          triangles << triangle
         end
       end
     end

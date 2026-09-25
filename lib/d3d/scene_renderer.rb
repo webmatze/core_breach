@@ -119,35 +119,116 @@ module D3D
       sub = d < 14 ? 4 : (d < 30 ? 3 : (d < 60 ? 2 : 1))
       eu = f.eu
       ev = f.ev
-      o = to_cam(c0[0], c0[1], c0[2])
-      u = dir_to_cam(eu[0], eu[1], eu[2])
-      v = dir_to_cam(ev[0], ev[1], ev[2])
+      # Face origin and edge vectors in camera space (scalars, no arrays).
+      px = @px
+      py = @py
+      pz = @pz
+      rx = @rx
+      ry = @ry
+      rz = @rz
+      upx = @ux
+      upy = @uy
+      upz = @uz
+      fx = @fx
+      fy = @fy
+      fz = @fz
+      dx = c0[0] - px
+      dy = c0[1] - py
+      dz = c0[2] - pz
+      ox = dx * rx + dy * ry + dz * rz
+      oy = dx * upx + dy * upy + dz * upz
+      oz = dx * fx + dy * fy + dz * fz
+      e0 = eu[0]
+      e1 = eu[1]
+      e2 = eu[2]
+      ux = e0 * rx + e1 * ry + e2 * rz
+      uy = e0 * upx + e1 * upy + e2 * upz
+      uz = e0 * fx + e1 * fy + e2 * fz
+      e0 = ev[0]
+      e1 = ev[1]
+      e2 = ev[2]
+      vx = e0 * rx + e1 * ry + e2 * rz
+      vy = e0 * upx + e1 * upy + e2 * upz
+      vz = e0 * fx + e1 * fy + e2 * fz
 
-      # Quick frustum reject of the whole face.
-      corners = [o,
-                 [o[0] + u[0], o[1] + u[1], o[2] + u[2]],
-                 [o[0] + u[0] + v[0], o[1] + u[1] + v[1], o[2] + u[2] + v[2]],
-                 [o[0] + v[0], o[1] + v[1], o[2] + v[2]]]
-      return if corners.all? { |c| c[2] < @near }
-      return if corners.all? { |c| c[0] > c[2] * @tan_x }
-      return if corners.all? { |c| c[0] < -c[2] * @tan_x }
-      return if corners.all? { |c| c[1] > c[2] * @tan_y }
-      return if corners.all? { |c| c[1] < -c[2] * @tan_y }
+      # Quick frustum reject of the whole face (corners o, o+u, o+u+v, o+v).
+      near = @near
+      x1 = ox + ux
+      y1 = oy + uy
+      z1 = oz + uz
+      x2 = ox + ux + vx
+      y2 = oy + uy + vy
+      z2 = oz + uz + vz
+      x3 = ox + vx
+      y3 = oy + vy
+      z3 = oz + vz
+      return if oz < near && z1 < near && z2 < near && z3 < near
+      tx = @tan_x
+      return if ox > oz * tx && x1 > z1 * tx && x2 > z2 * tx && x3 > z3 * tx
+      return if ox < -oz * tx && x1 < -z1 * tx && x2 < -z2 * tx && x3 < -z3 * tx
+      ty = @tan_y
+      return if oy > oz * ty && y1 > z1 * ty && y2 > z2 * ty && y3 > z3 * ty
+      return if oy < -oz * ty && y1 < -z1 * ty && y2 < -z2 * ty && y3 < -z3 * ty
 
       shade = f.shade
       path = mat[:path]
       step = 1.0 / sub
       tstep = tex.to_f / sub
-      sub.times do |a|
+
+      # Shared (sub+1)^2 grid of camera space points, projected once.
+      n1 = sub + 1
+      gx = (@grid_x ||= [])
+      gy = (@grid_y ||= [])
+      gz = (@grid_z ||= [])
+      gsx = (@grid_sx ||= [])
+      gsy = (@grid_sy ||= [])
+      focal = @focal
+      hw = @half_w
+      hh = @half_h
+      k = 0
+      i = 0
+      while i < n1
+        si = i * step
+        bx = ox + ux * si
+        by = oy + uy * si
+        bz = oz + uz * si
+        j = 0
+        while j < n1
+          tj = j * step
+          cx = bx + vx * tj
+          cy = by + vy * tj
+          cz = bz + vz * tj
+          gx[k] = cx
+          gy[k] = cy
+          gz[k] = cz
+          if cz >= near
+            iz = focal / cz
+            gsx[k] = hw + cx * iz
+            gsy[k] = hh + cy * iz
+          end
+          k += 1
+          j += 1
+        end
+        i += 1
+      end
+
+      width = @width
+      height = @height
+      list = @list
+      a = 0
+      while a < sub
         sa = a * step
-        sa1 = sa + step
-        sub.times do |b|
+        ta0 = a * tstep
+        ta1 = (a + 1) * tstep
+        b = 0
+        while b < sub
           tb = b * step
-          tb1 = tb + step
-          p0 = [o[0] + u[0] * sa + v[0] * tb, o[1] + u[1] * sa + v[1] * tb, o[2] + u[2] * sa + v[2] * tb, a * tstep, b * tstep]
-          p1 = [o[0] + u[0] * sa1 + v[0] * tb, o[1] + u[1] * sa1 + v[1] * tb, o[2] + u[2] * sa1 + v[2] * tb, (a + 1) * tstep, b * tstep]
-          p2 = [o[0] + u[0] * sa1 + v[0] * tb1, o[1] + u[1] * sa1 + v[1] * tb1, o[2] + u[2] * sa1 + v[2] * tb1, (a + 1) * tstep, (b + 1) * tstep]
-          p3 = [o[0] + u[0] * sa + v[0] * tb1, o[1] + u[1] * sa + v[1] * tb1, o[2] + u[2] * sa + v[2] * tb1, a * tstep, (b + 1) * tstep]
+          tb0 = b * tstep
+          tb1 = (b + 1) * tstep
+          k0 = a * n1 + b
+          k1 = k0 + n1
+          k2 = k1 + 1
+          k3 = k0 + 1
 
           # sub face centre in world space, for lighting and sorting
           sm = sa + step * 0.5
@@ -155,10 +236,88 @@ module D3D
           wx = c0[0] + eu[0] * sm + ev[0] * tm
           wy = c0[1] + eu[1] * sm + ev[1] * tm
           wz = c0[2] + eu[2] * sm + ev[2] * tm
-          dd = (wx - @px)**2 + (wy - @py)**2 + (wz - @pz)**2
-          r, g, bl = light_at(wx, wy, wz, Math.sqrt(dd), shade)
-          emit_textured([p0, p1, p2, p3], path, r, g, bl, dd)
+          dd = (wx - px)**2 + (wy - py)**2 + (wz - pz)**2
+
+          if gz[k0] >= near && gz[k1] >= near && gz[k2] >= near && gz[k3] >= near
+            sx0 = gsx[k0]
+            sy0 = gsy[k0]
+            sx1 = gsx[k1]
+            sy1 = gsy[k1]
+            sx2 = gsx[k2]
+            sy2 = gsy[k2]
+            sx3 = gsx[k3]
+            sy3 = gsy[k3]
+            unless (sx0 < 0 && sx1 < 0 && sx2 < 0 && sx3 < 0) ||
+                   (sx0 > width && sx1 > width && sx2 > width && sx3 > width) ||
+                   (sy0 < 0 && sy1 < 0 && sy2 < 0 && sy3 < 0) ||
+                   (sy0 > height && sy1 > height && sy2 > height && sy3 > height)
+              r, g, bl = light_at(wx, wy, wz, Math.sqrt(dd), shade)
+              # pad! unrolled for the 4 vertex case
+              mx = 0.0 + sx0
+              mx += sx1
+              mx += sx2
+              mx += sx3
+              mx /= 4
+              my = 0.0 + sy0
+              my += sy1
+              my += sy2
+              my += sy3
+              my /= 4
+              ddx = sx0 - mx
+              ddy = sy0 - my
+              l = Math.sqrt(ddx * ddx + ddy * ddy)
+              unless l < 1e-3
+                sx0 += ddx / l * 0.7
+                sy0 += ddy / l * 0.7
+              end
+              ddx = sx1 - mx
+              ddy = sy1 - my
+              l = Math.sqrt(ddx * ddx + ddy * ddy)
+              unless l < 1e-3
+                sx1 += ddx / l * 0.7
+                sy1 += ddy / l * 0.7
+              end
+              ddx = sx2 - mx
+              ddy = sy2 - my
+              l = Math.sqrt(ddx * ddx + ddy * ddy)
+              unless l < 1e-3
+                sx2 += ddx / l * 0.7
+                sy2 += ddy / l * 0.7
+              end
+              ddx = sx3 - mx
+              ddy = sy3 - my
+              l = Math.sqrt(ddx * ddx + ddy * ddy)
+              unless l < 1e-3
+                sx3 += ddx / l * 0.7
+                sy3 += ddy / l * 0.7
+              end
+              @triangle_count += 2
+              list << [dd, {
+                x: sx0, y: sy0, x2: sx1, y2: sy1, x3: sx2, y3: sy2,
+                source_x: ta0, source_y: tb0,
+                source_x2: ta1, source_y2: tb0,
+                source_x3: ta1, source_y3: tb1,
+                path: path, r: r, g: g, b: bl
+              }]
+              list << [dd, {
+                x: sx0, y: sy0, x2: sx2, y2: sy2, x3: sx3, y3: sy3,
+                source_x: ta0, source_y: tb0,
+                source_x2: ta1, source_y2: tb1,
+                source_x3: ta0, source_y3: tb1,
+                path: path, r: r, g: g, b: bl
+              }]
+            end
+          else
+            # Crosses the near plane: generic clipping path.
+            r, g, bl = light_at(wx, wy, wz, Math.sqrt(dd), shade)
+            emit_textured([[gx[k0], gy[k0], gz[k0], ta0, tb0],
+                           [gx[k1], gy[k1], gz[k1], ta1, tb0],
+                           [gx[k2], gy[k2], gz[k2], ta1, tb1],
+                           [gx[k3], gy[k3], gz[k3], ta0, tb1]], path, r, g, bl, dd)
+          end
+          b += 1
         end
+        a += 1
       end
     end
 
