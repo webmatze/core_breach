@@ -33,7 +33,11 @@ module D3D
     end
 
     def colliding?(world)
-      world.aabb_intersects?(aabb_min, aabb_max)
+      half = @width / 2.0
+      px = @position.x
+      py = @position.y
+      pz = @position.z
+      world.aabb_intersects_xyz?(px - half, py, pz - half, px + half, py + @height, pz + half)
     end
 
     def intersects_block?(bx, by, bz)
@@ -53,10 +57,14 @@ module D3D
       min_z = (@position.z - half).floor
       max_z = (@position.z + half - eps).floor
 
-      (min_x..max_x).each do |bx|
-        (min_z..max_z).each do |bz|
+      bx = min_x
+      while bx <= max_x
+        bz = min_z
+        while bz <= max_z
           return true if world.has_block?(bx, by, bz)
+          bz += 1
         end
+        bx += 1
       end
       false
     end

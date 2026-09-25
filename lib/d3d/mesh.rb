@@ -13,11 +13,13 @@ module D3D
     def vertices=(value)
       @vertices = value
       @face_normals = nil
+      @face_cull_data = nil
     end
 
     def faces=(value)
       @faces = value
       @face_normals = nil
+      @face_cull_data = nil
     end
 
     # Unit outward normal [x, y, z] per face, from the winding (faces wind
@@ -45,6 +47,40 @@ module D3D
 
     def invalidate_normals!
       @face_normals = nil
+      @face_cull_data = nil
+    end
+
+    # Flat per-face arrays for the renderer's back face cull:
+    # [i0s, i1s, i2s, v0x, v0y, v0z, nx, ny, nz] (vertex indices, first
+    # corner position, face normal). Cached alongside face_normals.
+    def face_cull_data
+      @face_cull_data ||= begin
+        fns = face_normals
+        i0s = []
+        i1s = []
+        i2s = []
+        v0x = []
+        v0y = []
+        v0z = []
+        nxs = []
+        nys = []
+        nzs = []
+        @faces.each_with_index do |face, fi|
+          vi = face[:v]
+          v0 = @vertices[vi[0]]
+          fn = fns[fi]
+          i0s << vi[0]
+          i1s << vi[1]
+          i2s << vi[2]
+          v0x << v0.x
+          v0y << v0.y
+          v0z << v0.z
+          nxs << fn[0]
+          nys << fn[1]
+          nzs << fn[2]
+        end
+        [i0s, i1s, i2s, v0x, v0y, v0z, nxs, nys, nzs]
+      end
     end
 
     def dup

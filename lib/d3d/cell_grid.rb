@@ -67,8 +67,6 @@ module D3D
       @gp_x = Array.new(gp)
       @gp_y = Array.new(gp)
       @gp_z = Array.new(gp)
-      # Flat index offset to the neighbour in DIRS[n].
-      @dir_off = [-1, 1, -nx, nx, -nx * ny, nx * ny]
       # Grid point index offset of each PORTALS corner, flattened (dir * 4 + corner).
       @portal_goff = []
       PORTALS.each { |corners| corners.each { |o| @portal_goff << o[0] + (nx + 1) * (o[1] + (ny + 1) * o[2]) } }
@@ -285,8 +283,9 @@ module D3D
     # and within fog distance. Returns the flat indices of the cells reached.
     #
     # Hot path: works on flat cell indices with parallel i/j/k queues, and the
-    # neighbour, distance and portal tests are inlined. Grid corners are
-    # transformed to camera space at most once per pass (gp_x/gp_y/gp_z cache).
+    # neighbour, distance and portal tests are inlined and unrolled per
+    # direction (-x, +x, -y, +y, -z, +z). Grid corners are transformed to
+    # camera space inline, at most once per pass (gp_x/gp_y/gp_z cache).
     def visible_cells(renderer)
       @stamp += 1
       stamp = @stamp
@@ -304,13 +303,14 @@ module D3D
       cj = (py / cs).floor
       ck = (pz / cs).floor
       return [] unless ci >= 0 && cj >= 0 && ck >= 0 && ci < nx && cj < ny && ck < nz
+      # Camera basis for the inlined to_cam of grid points (same arithmetic).
+      rx, ry, rz, ux, uy, uz, fx, fy, fz = renderer.camera_basis
       tx = renderer.tan_x
       ty = renderer.tan_y
       ntx = -tx
       nty = -ty
       gnx = nx + 1
       gnxy = gnx * (ny + 1)
-      dir_off = @dir_off
       pgoff = @portal_goff
       po = PORTAL_OFFSETS
       cells = @cells
@@ -341,40 +341,17 @@ module D3D
         ey2 = ey * ey
         ez2 = ez * ez
         g0 = i + gnx * j + gnxy * k
-        di = 0
-        while di < 6
-          ni = i
-          nj = j
-          nk = k
-          if di < 2
-            ni = di == 0 ? i - 1 : i + 1
-            inb = ni >= 0 && ni < nx
-          elsif di < 4
-            nj = di == 2 ? j - 1 : j + 1
-            inb = nj >= 0 && nj < ny
-          else
-            nk = di == 4 ? k - 1 : k + 1
-            inb = nk >= 0 && nk < nz
-          end
-          m = n + dir_off[di]
-          if inb && cells[m] && visited[m] != stamp
-            if di < 2
-              dd = (ni + 0.5) * cs - px
-              d2 = dd * dd + ey2 + ez2
-            elsif di < 4
-              dd = (nj + 0.5) * cs - py
-              d2 = ex2 + dd * dd + ez2
-            else
-              dd = (nk + 0.5) * cs - pz
-              d2 = ex2 + ey2 + dd * dd
-            end
-            unless d2 > max_d2
+        # -x neighbour
+        if i > 0
+          m = n - 1
+          if cells[m] && visited[m] != stamp
+            dd = (i - 1 + 0.5) * cs - px
+            unless dd * dd + ey2 + ez2 > max_d2
               # Portal test: reject only if all four corners are behind the
               # eye or all outside the same frustum side plane.
               all_behind = all_left = all_right = all_top = all_bottom = true
-              q = di * 4
-              qe = q + 4
-              while q < qe
+              q = 0
+              while q < 4
                 g = g0 + pgoff[q]
                 if gp_stamp[g] == stamp
                   cx = gp_x[g]
@@ -383,10 +360,12 @@ module D3D
                 else
                   gp_stamp[g] = stamp
                   o = q * 3
-                  v = renderer.to_cam((i + po[o]) * cs, (j + po[o + 1]) * cs, (k + po[o + 2]) * cs)
-                  cx = gp_x[g] = v[0]
-                  cy = gp_y[g] = v[1]
-                  cz = gp_z[g] = v[2]
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
                 end
                 all_behind = false unless cz <= 0
                 all_right = false unless cx > cz * tx
@@ -398,13 +377,217 @@ module D3D
               unless all_behind || all_left || all_right || all_top || all_bottom
                 visited[m] = stamp
                 qn << m
-                qi << ni
-                qj << nj
-                qk << nk
+                qi << i - 1
+                qj << j
+                qk << k
               end
             end
           end
-          di += 1
+        end
+        # +x neighbour
+        if i + 1 < nx
+          m = n + 1
+          if cells[m] && visited[m] != stamp
+            dd = (i + 1 + 0.5) * cs - px
+            unless dd * dd + ey2 + ez2 > max_d2
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = 4
+              while q < 8
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << i + 1
+                qj << j
+                qk << k
+              end
+            end
+          end
+        end
+        # -y neighbour
+        if j > 0
+          m = n - nx
+          if cells[m] && visited[m] != stamp
+            dd = (j - 1 + 0.5) * cs - py
+            unless ex2 + dd * dd + ez2 > max_d2
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = 8
+              while q < 12
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << i
+                qj << j - 1
+                qk << k
+              end
+            end
+          end
+        end
+        # +y neighbour
+        if j + 1 < ny
+          m = n + nx
+          if cells[m] && visited[m] != stamp
+            dd = (j + 1 + 0.5) * cs - py
+            unless ex2 + dd * dd + ez2 > max_d2
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = 12
+              while q < 16
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << i
+                qj << j + 1
+                qk << k
+              end
+            end
+          end
+        end
+        # -z neighbour
+        if k > 0
+          m = n - nxy
+          if cells[m] && visited[m] != stamp
+            dd = (k - 1 + 0.5) * cs - pz
+            unless ex2 + ey2 + dd * dd > max_d2
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = 16
+              while q < 20
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << i
+                qj << j
+                qk << k - 1
+              end
+            end
+          end
+        end
+        # +z neighbour
+        if k + 1 < nz
+          m = n + nxy
+          if cells[m] && visited[m] != stamp
+            dd = (k + 1 + 0.5) * cs - pz
+            unless ex2 + ey2 + dd * dd > max_d2
+              all_behind = all_left = all_right = all_top = all_bottom = true
+              q = 20
+              while q < 24
+                g = g0 + pgoff[q]
+                if gp_stamp[g] == stamp
+                  cx = gp_x[g]
+                  cy = gp_y[g]
+                  cz = gp_z[g]
+                else
+                  gp_stamp[g] = stamp
+                  o = q * 3
+                  dx = (i + po[o]) * cs - px
+                  dy = (j + po[o + 1]) * cs - py
+                  dz = (k + po[o + 2]) * cs - pz
+                  cx = gp_x[g] = dx * rx + dy * ry + dz * rz
+                  cy = gp_y[g] = dx * ux + dy * uy + dz * uz
+                  cz = gp_z[g] = dx * fx + dy * fy + dz * fz
+                end
+                all_behind = false unless cz <= 0
+                all_right = false unless cx > cz * tx
+                all_left = false unless cx < cz * ntx
+                all_top = false unless cy > cz * ty
+                all_bottom = false unless cy < cz * nty
+                q += 1
+              end
+              unless all_behind || all_left || all_right || all_top || all_bottom
+                visited[m] = stamp
+                qn << m
+                qi << i
+                qj << j
+                qk << k + 1
+              end
+            end
+          end
         end
       end
       result

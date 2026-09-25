@@ -28,25 +28,42 @@ module D3D
       end
     end
 
+    # Unrolled 4x4 product. Each entry keeps the original summation order
+    # (starting from 0.0, k = 0..3) so results stay bit-identical.
     def multiply_matrix(other)
-      result = Mat4.new(Array.new(16, 0.0))
-      4.times do |row|
-        4.times do |col|
-          sum = 0.0
-          4.times do |k|
-            sum += self[row, k] * other[k, col]
-          end
-          result[row, col] = sum
-        end
-      end
-      result
+      a = @data
+      b = other.data
+      a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15 = a
+      b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15 = b
+      Mat4.new([
+        (((0.0 + a0 * b0) + a1 * b4) + a2 * b8) + a3 * b12,
+        (((0.0 + a0 * b1) + a1 * b5) + a2 * b9) + a3 * b13,
+        (((0.0 + a0 * b2) + a1 * b6) + a2 * b10) + a3 * b14,
+        (((0.0 + a0 * b3) + a1 * b7) + a2 * b11) + a3 * b15,
+        (((0.0 + a4 * b0) + a5 * b4) + a6 * b8) + a7 * b12,
+        (((0.0 + a4 * b1) + a5 * b5) + a6 * b9) + a7 * b13,
+        (((0.0 + a4 * b2) + a5 * b6) + a6 * b10) + a7 * b14,
+        (((0.0 + a4 * b3) + a5 * b7) + a6 * b11) + a7 * b15,
+        (((0.0 + a8 * b0) + a9 * b4) + a10 * b8) + a11 * b12,
+        (((0.0 + a8 * b1) + a9 * b5) + a10 * b9) + a11 * b13,
+        (((0.0 + a8 * b2) + a9 * b6) + a10 * b10) + a11 * b14,
+        (((0.0 + a8 * b3) + a9 * b7) + a10 * b11) + a11 * b15,
+        (((0.0 + a12 * b0) + a13 * b4) + a14 * b8) + a15 * b12,
+        (((0.0 + a12 * b1) + a13 * b5) + a14 * b9) + a15 * b13,
+        (((0.0 + a12 * b2) + a13 * b6) + a14 * b10) + a15 * b14,
+        (((0.0 + a12 * b3) + a13 * b7) + a14 * b11) + a15 * b15
+      ])
     end
 
     def multiply_vec3(vec, w = 1.0)
-      x = self[0, 0] * vec.x + self[0, 1] * vec.y + self[0, 2] * vec.z + self[0, 3] * w
-      y = self[1, 0] * vec.x + self[1, 1] * vec.y + self[1, 2] * vec.z + self[1, 3] * w
-      z = self[2, 0] * vec.x + self[2, 1] * vec.y + self[2, 2] * vec.z + self[2, 3] * w
-      w_out = self[3, 0] * vec.x + self[3, 1] * vec.y + self[3, 2] * vec.z + self[3, 3] * w
+      d = @data
+      vx = vec.x
+      vy = vec.y
+      vz = vec.z
+      x = d[0] * vx + d[1] * vy + d[2] * vz + d[3] * w
+      y = d[4] * vx + d[5] * vy + d[6] * vz + d[7] * w
+      z = d[8] * vx + d[9] * vy + d[10] * vz + d[11] * w
+      w_out = d[12] * vx + d[13] * vy + d[14] * vz + d[15] * w
       [Vec3.new(x, y, z), w_out]
     end
 
@@ -162,27 +179,60 @@ module D3D
     end
 
     def self.look_at(eye, target, up)
-      forward = (eye - target).normalize
-      right = up.cross(forward).normalize
-      new_up = forward.cross(right)
+      look_at_scalar(eye.x, eye.y, eye.z, target.x, target.y, target.z, up.x, up.y, up.z)
+    end
 
-      mat = Mat4.new
-      mat[0, 0] = right.x
-      mat[0, 1] = right.y
-      mat[0, 2] = right.z
-      mat[0, 3] = -right.dot(eye)
+    # Scalar look_at: same operation order as Vec3#-, #normalize, #cross and
+    # #dot, but no Vec3 allocations and no Mat4#[]= calls.
+    def self.look_at_scalar(ex, ey, ez, tx, ty, tz, ux, uy, uz)
+      ex = ex.to_f
+      ey = ey.to_f
+      ez = ez.to_f
+      ux = ux.to_f
+      uy = uy.to_f
+      uz = uz.to_f
 
-      mat[1, 0] = new_up.x
-      mat[1, 1] = new_up.y
-      mat[1, 2] = new_up.z
-      mat[1, 3] = -new_up.dot(eye)
+      # forward = (eye - target).normalize
+      fx = ex - tx.to_f
+      fy = ey - ty.to_f
+      fz = ez - tz.to_f
+      len = Math.sqrt(fx * fx + fy * fy + fz * fz)
+      if len == 0
+        fx = 0.0
+        fy = 0.0
+        fz = 0.0
+      else
+        fx /= len
+        fy /= len
+        fz /= len
+      end
 
-      mat[2, 0] = forward.x
-      mat[2, 1] = forward.y
-      mat[2, 2] = forward.z
-      mat[2, 3] = -forward.dot(eye)
+      # right = up.cross(forward).normalize
+      rx = uy * fz - uz * fy
+      ry = uz * fx - ux * fz
+      rz = ux * fy - uy * fx
+      len = Math.sqrt(rx * rx + ry * ry + rz * rz)
+      if len == 0
+        rx = 0.0
+        ry = 0.0
+        rz = 0.0
+      else
+        rx /= len
+        ry /= len
+        rz /= len
+      end
 
-      mat
+      # new_up = forward.cross(right)
+      nx = fy * rz - fz * ry
+      ny = fz * rx - fx * rz
+      nz = fx * ry - fy * rx
+
+      Mat4.new([
+        rx, ry, rz, -(rx * ex + ry * ey + rz * ez),
+        nx, ny, nz, -(nx * ex + ny * ey + nz * ez),
+        fx, fy, fz, -(fx * ex + fy * ey + fz * ez),
+        0.0, 0.0, 0.0, 1.0
+      ])
     end
 
     def self.orthographic(left, right, bottom, top, near, far)

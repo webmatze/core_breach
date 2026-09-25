@@ -73,6 +73,12 @@ module D3D
        dx * @fx + dy * @fy + dz * @fz]
     end
 
+    # Camera basis as [rx, ry, rz, ux, uy, uz, fx, fy, fz] (right, up, fwd),
+    # for callers that inline to_cam on hot paths.
+    def camera_basis
+      [@rx, @ry, @rz, @ux, @uy, @uz, @fx, @fy, @fz]
+    end
+
     # World direction -> camera space (rotation only).
     def dir_to_cam(x, y, z)
       [x * @rx + y * @ry + z * @rz,

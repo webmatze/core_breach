@@ -84,14 +84,28 @@ module D3D
       }
     }.freeze
 
+    # Block keys pack x/y/z into one Integer (20 bits per axis, 60 bits
+    # total) so lookups allocate no Strings and stay within mruby's 64-bit
+    # fixnums. Supported coordinate range per axis: -524288..524287.
+    KEY_OFFSET = 1 << 19
+    KEY_SPAN = 1 << 20
+
+    # FACES as a flat array of [check, vertices, uvs, neighbor key delta],
+    # so build_mesh can find neighbors with one Integer add per face.
+    FACE_LIST = FACES.values.map do |face|
+      check = face[:check]
+      delta = (check[0] * KEY_SPAN + check[1]) * KEY_SPAN + check[2]
+      [check, face[:vertices], face[:uvs], delta].freeze
+    end.freeze
+
     def initialize
-      @blocks = {}  # Spatial hash: "x,y,z" => color_hash
+      @blocks = {}  # Spatial hash: packed Integer key (see block_key) => color_hash
       @mesh_data = nil
       @dirty = true
     end
 
     def add_block(x, y, z, color, texture: nil)
-      key = "#{x.to_i},#{y.to_i},#{z.to_i}"
+      key = block_key(x.to_i, y.to_i, z.to_i)
       @blocks[key] = {
         x: x.to_i,
         y: y.to_i,
@@ -106,17 +120,16 @@ module D3D
     end
 
     def remove_block(x, y, z)
-      key = "#{x.to_i},#{y.to_i},#{z.to_i}"
-      @blocks.delete(key)
+      @blocks.delete(block_key(x.to_i, y.to_i, z.to_i))
       @dirty = true
     end
 
     def has_block?(x, y, z)
-      @blocks.key?("#{x.to_i},#{y.to_i},#{z.to_i}")
+      @blocks.key?(block_key(x.to_i, y.to_i, z.to_i))
     end
 
     def get_block(x, y, z)
-      @blocks["#{x.to_i},#{y.to_i},#{z.to_i}"]
+      @blocks[block_key(x.to_i, y.to_i, z.to_i)]
     end
 
     def block_count
@@ -130,22 +143,16 @@ module D3D
       vertices = []
       faces = []
 
-      @blocks.each_value do |block|
+      blocks = @blocks
+      blocks.each do |key, block|
         bx, by, bz = block[:x], block[:y], block[:z]
         r, g, b, a = block[:r], block[:g], block[:b], block[:a]
         texture = block[:texture]
 
-        FACES.each do |_face_name, face_data|
-          check = face_data[:check]
-          neighbor_x = bx + check[0]
-          neighbor_y = by + check[1]
-          neighbor_z = bz + check[2]
-
+        FACE_LIST.each do |check, verts, uvs, delta|
           # Only add face if no neighbor block exists
-          next if has_block?(neighbor_x, neighbor_y, neighbor_z)
+          next if blocks.key?(key + delta)
 
-          verts = face_data[:vertices]
-          uvs = face_data[:uvs]
           base_idx = vertices.size
 
           # Add 6 vertices for this face (2 triangles)
@@ -213,20 +220,46 @@ module D3D
     # True if the AABB (min/max as Vec3) overlaps any block. Boxes that only
     # touch a block face (e.g. standing exactly on top) do not intersect.
     def aabb_intersects?(min, max)
-      eps = 1e-9
-      min_x = min.x.floor
-      max_x = (max.x - eps).floor
-      min_y = min.y.floor
-      max_y = (max.y - eps).floor
-      min_z = min.z.floor
-      max_z = (max.z - eps).floor
+      aabb_intersects_xyz?(min.x, min.y, min.z, max.x, max.y, max.z)
+    end
 
-      (min_x..max_x).each do |bx|
-        (min_y..max_y).each do |by|
-          (min_z..max_z).each do |bz|
-            return true if has_block?(bx, by, bz)
+    # Scalar variant of aabb_intersects? (no Vec3 needed). Walks the covered
+    # cells with while loops and builds the packed key from per-axis parts.
+    def aabb_intersects_xyz?(min_x, min_y, min_z, max_x, max_y, max_z)
+      eps = 1e-9
+      x0 = min_x.floor
+      x1 = (max_x - eps).floor
+      y0 = min_y.floor
+      y1 = (max_y - eps).floor
+      z0 = min_z.floor
+      z1 = (max_z - eps).floor
+      return false if x0 > x1 || y0 > y1 || z0 > z1
+
+      blocks = @blocks
+      span = KEY_SPAN
+      span2 = KEY_SPAN * KEY_SPAN
+      offset = KEY_OFFSET
+      ypart0 = (y0 + offset) * span
+      zpart0 = z0 + offset
+
+      bx = x0
+      while bx <= x1
+        xpart = (bx + offset) * span2
+        ypart = ypart0
+        by = y0
+        while by <= y1
+          xy = xpart + ypart
+          key = xy + zpart0
+          bz = z0
+          while bz <= z1
+            return true if blocks.key?(key)
+            key += 1
+            bz += 1
           end
+          ypart += span
+          by += 1
         end
+        bx += 1
       end
       false
     end
@@ -234,50 +267,83 @@ module D3D
     # Voxel raycast (Amanatides & Woo DDA). Returns the first solid block hit
     # as { x:, y:, z:, normal: [nx, ny, nz], distance: } or nil.
     def raycast(origin, dir, max_distance)
-      x = origin.x.floor
-      y = origin.y.floor
-      z = origin.z.floor
+      ox = origin.x
+      oy = origin.y
+      oz = origin.z
+      dx = dir.x
+      dy = dir.y
+      dz = dir.z
+      x = ox.floor
+      y = oy.floor
+      z = oz.floor
 
-      step_x = dir.x > 0 ? 1 : -1
-      step_y = dir.y > 0 ? 1 : -1
-      step_z = dir.z > 0 ? 1 : -1
+      step_x = dx > 0 ? 1 : -1
+      step_y = dy > 0 ? 1 : -1
+      step_z = dz > 0 ? 1 : -1
 
       inf = Float::INFINITY
-      t_delta_x = dir.x == 0 ? inf : (1.0 / dir.x).abs
-      t_delta_y = dir.y == 0 ? inf : (1.0 / dir.y).abs
-      t_delta_z = dir.z == 0 ? inf : (1.0 / dir.z).abs
+      t_delta_x = dx == 0 ? inf : (1.0 / dx).abs
+      t_delta_y = dy == 0 ? inf : (1.0 / dy).abs
+      t_delta_z = dz == 0 ? inf : (1.0 / dz).abs
 
-      t_max_x = dir.x == 0 ? inf : ((dir.x > 0 ? x + 1 - origin.x : origin.x - x) * t_delta_x)
-      t_max_y = dir.y == 0 ? inf : ((dir.y > 0 ? y + 1 - origin.y : origin.y - y) * t_delta_y)
-      t_max_z = dir.z == 0 ? inf : ((dir.z > 0 ? z + 1 - origin.z : origin.z - z) * t_delta_z)
+      t_max_x = dx == 0 ? inf : ((dx > 0 ? x + 1 - ox : ox - x) * t_delta_x)
+      t_max_y = dy == 0 ? inf : ((dy > 0 ? y + 1 - oy : oy - y) * t_delta_y)
+      t_max_z = dz == 0 ? inf : ((dz > 0 ? z + 1 - oz : oz - z) * t_delta_z)
 
-      normal = [0, 0, 0]
+      blocks = @blocks
+      span = KEY_SPAN
+      key = block_key(x, y, z)
+      key_step_x = step_x * span * span
+      key_step_y = step_y * span
+      key_step_z = step_z
+
+      # Last stepped axis: 0 = none (start cell), 1 = x, 2 = y, 3 = z.
+      axis = 0
       t = 0.0
 
       while t <= max_distance
-        if has_block?(x, y, z)
+        if blocks.key?(key)
+          normal =
+            if axis == 1
+              [-step_x, 0, 0]
+            elsif axis == 2
+              [0, -step_y, 0]
+            elsif axis == 3
+              [0, 0, -step_z]
+            else
+              [0, 0, 0]
+            end
           return { x: x, y: y, z: z, normal: normal, distance: t }
         end
 
         if t_max_x < t_max_y && t_max_x < t_max_z
           x += step_x
+          key += key_step_x
           t = t_max_x
           t_max_x += t_delta_x
-          normal = [-step_x, 0, 0]
+          axis = 1
         elsif t_max_y < t_max_z
           y += step_y
+          key += key_step_y
           t = t_max_y
           t_max_y += t_delta_y
-          normal = [0, -step_y, 0]
+          axis = 2
         else
           z += step_z
+          key += key_step_z
           t = t_max_z
           t_max_z += t_delta_z
-          normal = [0, 0, -step_z]
+          axis = 3
         end
       end
 
       nil
+    end
+
+    private
+
+    def block_key(x, y, z)
+      ((x + KEY_OFFSET) * KEY_SPAN + (y + KEY_OFFSET)) * KEY_SPAN + (z + KEY_OFFSET)
     end
   end
 end

@@ -200,8 +200,16 @@ module D3D
     private
 
     def calculate_view_matrix
-      target = @position + forward
-      Mat4.look_at(@position, target, Vec3.up)
+      pos = @position
+      px = pos.x
+      py = pos.y
+      pz = pos.z
+      cos_pitch = Math.cos(@pitch)
+      # target = position + forward (same expressions as #forward)
+      tx = px + Math.sin(@yaw) * cos_pitch
+      ty = py + -Math.sin(@pitch)
+      tz = pz + -Math.cos(@yaw) * cos_pitch
+      Mat4.look_at_scalar(px, py, pz, tx, ty, tz, 0.0, 1.0, 0.0)
     end
   end
 end
