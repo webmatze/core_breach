@@ -81,6 +81,31 @@ module Models
     m
   end
 
+  # Shield pylon: a tall crystal column on a metal foot, local +y up.
+  def self.pylon
+    m = D3D::FlatMesh.new
+    m.bipyramid 6, 1.3, 4.2, 3.2, [[90, 230, 255], [50, 170, 220]], center: [0, 0.8, 0], axis: :y, emissive: true
+    m.box 0, -3.9, 0, 1.8, 0.6, 1.8, [110, 115, 130], [80, 85, 100]
+    m.box 0, 0.8, 0, 0.35, 2.2, 0.35, [200, 255, 255], emissive: true
+    m
+  end
+
+  # The Warden: a wide armoured octagon with two cannons and a glowing core
+  # that shows through the gaps between its armour plates.
+  def self.warden
+    m = D3D::FlatMesh.new
+    m.bipyramid 8, 5.0, 3.0, 3.5, [[120, 90, 150], [90, 70, 120]]
+    m.box 0, 0, 0, 2.0, 2.0, 2.0, [255, 80, 200], emissive: true
+    [-1, 1].each do |s|
+      m.box s * 4.6, 0, 1.0, 1.2, 1.4, 2.6, [100, 100, 115], [70, 70, 85]
+      m.box s * 4.6, 0, 3.8, 0.45, 0.45, 0.9, [60, 60, 70]
+      m.box s * 4.6, 0, 4.75, 0.5, 0.5, 0.08, [255, 90, 220], emissive: true
+      m.box 0, s * 3.4, -0.5, 3.2, 0.5, 2.2, [140, 110, 170], [100, 80, 130]
+    end
+    m.box 0, 1.2, 3.1, 1.4, 0.5, 0.12, [255, 60, 60], emissive: true
+    m
+  end
+
   def self.reactor_core
     m = D3D::FlatMesh.new
     m.bipyramid 8, 4.0, 5.0, 5.0, [[255, 150, 40], [255, 90, 20]], axis: :y, emissive: true
@@ -128,6 +153,8 @@ MESHES = {
   core:    Models.reactor_core,
   frame:   Models.reactor_frame,
   missile: Models.missile,
+  pylon: Models.pylon,
+  warden: Models.warden,
   turret_base: Models.turret_base,
   turret_gun: Models.turret_gun,
   splitter_left: Models.splitter_half(-1),

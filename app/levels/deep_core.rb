@@ -6,22 +6,23 @@
 #     middle, east: BLUE door -> blackout wing (maze) with the YELLOW key
 #     bottom, south: YELLOW door -> magma caverns with the RED key
 #     bottom, north: RED door -> core chamber
-#   Completing the objective in the core chamber opens the escape vent in its
-#   ceiling, which climbs next to the shaft up to the exit.
+#   The Warden guards the core chamber, shielded while any of the three
+#   pylons stands (shaft ledge, dark wing, magma caverns). Destroying it opens
+#   the escape vent in the chamber ceiling, which climbs up to the exit.
 module Levels
   module DeepCore
     TITLE     = 'The Deep Core'
     SIZE      = [48, 40, 48]
     COUNTDOWN = 60.0
-    OBJECTIVE = :reactor
+    OBJECTIVE = :boss
     MESSAGES  = {
-      briefing:       'Descend the shaft. Three keys guard the core. Destroy it and climb out.',
+      briefing:       'Descend the shaft. The Warden guards the core, shielded by three pylons. Destroy them all and climb out.',
       respawn:        'Ship restored at the arrival dock.',
-      exit_locked:    'The escape vent stays sealed while the core is intact.',
-      objective_done: 'CORE DESTROYED! Escape vent open: ceiling, far right corner from the red door. Follow the green lights!',
+      exit_locked:    'The escape vent stays sealed while the Warden lives.',
+      objective_done: 'WARDEN DESTROYED! Escape vent open: ceiling, far right corner from the red door. Follow the green lights!',
       blue_key:       'BLUE key acquired! The blue door is halfway down the shaft, east side. The power is out beyond it: use flares (G).',
       yellow_key:     'YELLOW key acquired! The yellow door is at the bottom of the shaft, south side.',
-      red_key:        'RED key acquired! The core lies behind the red door, bottom of the shaft, north side.'
+      red_key:        'RED key acquired! The Warden waits behind the red door, bottom of the shaft, north side.'
     }
 
     METAL_LIGHT  = [1.0, 1.0, 1.05]
@@ -103,7 +104,10 @@ module Levels
 
       # --- inhabitants ---------------------------------------------------------------
       l.set_player_start [24.0 * CS, 35.0 * CS, 6.0 * CS]
-      l.set_reactor [24.0 * CS, 6.5 * CS, 40.0 * CS]
+      l.set_boss [24.0 * CS, 6.5 * CS, 40.0 * CS]
+      l.pylon 28, 13, 25                                       # on a shaft ledge
+      l.pylon 43, 13, 28                                       # deep in the dark wing
+      l.pylon 34, 1, 10                                        # magma caverns, east edge
 
       l.spawn :missiles, 22, 34, 8
       l.spawn :shield, 25, 34, 8
@@ -157,7 +161,6 @@ module Levels
       l.spawn :drone, 17, 9, 36
       l.spawn :drone, 30, 9, 44
       l.spawn :brute, 18, 3, 43
-      l.spawn :brute, 29, 3, 36
       l.spawn :shield, 16, 2, 44
       l.spawn :energy, 31, 2, 35
     end

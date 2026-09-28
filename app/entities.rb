@@ -115,6 +115,49 @@ class Reactor
   end
 end
 
+# A shield pylon powering the Warden's shield. Stands upright on the floor.
+class Pylon
+  RADIUS = 2.0
+  HALF_HEIGHT = 4.5
+  MAX_HP = 120
+
+  attr_accessor :pos, :hp, :hit_flash, :phase
+
+  def initialize(pos)
+    @pos = pos
+    @hp = MAX_HP
+    @hit_flash = 0
+    @phase = rand * 6
+  end
+end
+
+# The Warden: a slow, heavily armed boss guarding the core. Shielded while
+# any pylon stands.
+class Boss
+  RADIUS = 7.0
+  MAX_HP = 600
+
+  attr_accessor :pos, :vel, :fwd, :hp, :cooldown, :summon_cooldown, :hit_flash,
+                :shield_flash, :phase, :sees, :last_seen, :think, :spread_side, :contact_cooldown
+
+  def initialize(pos)
+    @pos = pos.dup
+    @vel = [0.0, 0.0, 0.0]
+    @fwd = [0.0, 0.0, -1.0]
+    @hp = MAX_HP
+    @cooldown = 2.0
+    @summon_cooldown = 8.0
+    @hit_flash = 0
+    @shield_flash = 0
+    @phase = 0
+    @sees = false
+    @last_seen = nil
+    @think = 0
+    @spread_side = 1
+    @contact_cooldown = 0
+  end
+end
+
 class Projectile
   attr_accessor :pos, :vel, :owner, :damage, :kind, :life, :color, :size, :fwd
 

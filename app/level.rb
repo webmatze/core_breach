@@ -17,7 +17,8 @@ class Level
   }
   DOOR_MATERIALS = { blue: :door_blue, yellow: :door_yellow, red: :door_red, exit: :door_exit }
 
-  attr_reader :defn, :grid, :spawns, :player_start, :exit_cells, :reactor_pos, :lamps, :beacons
+  attr_reader :defn, :grid, :spawns, :player_start, :exit_cells, :reactor_pos, :lamps, :beacons,
+              :pylons, :boss_pos
 
   # defn: a level definition module from Levels::ALL
   def initialize(defn)
@@ -28,6 +29,7 @@ class Level
     @exit_cells = {}
     @lamps = []
     @beacons = []
+    @pylons = []
     defn.build(self)
     @grid.rebuild_faces
   end
@@ -59,6 +61,17 @@ class Level
 
   def set_reactor(pos)
     @reactor_pos = pos
+  end
+
+  def set_boss(pos)
+    @boss_pos = pos
+  end
+
+  # A shield pylon standing on the floor of open cell (i, j, k).
+  def pylon(i, j, k)
+    puts "Level #{@defn::TITLE}: pylon at #{[i, j, k]} is not in an open cell" unless @grid.open?(i, j, k)
+    puts "Level #{@defn::TITLE}: pylon at #{[i, j, k]} has no floor" if @grid.open?(i, j - 1, k)
+    @pylons << [(i + 0.5) * CS, j * CS + Pylon::HALF_HEIGHT + 0.5, (k + 0.5) * CS]
   end
 
   def set_player_start(pos)

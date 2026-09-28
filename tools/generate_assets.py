@@ -291,6 +291,31 @@ def flare_sound():
     return out
 
 
+def shield_hit():
+    """Short metallic ring of a hit bouncing off an energy shield."""
+    n = int(RATE * 0.35)
+    out = []
+    for i in range(n):
+        t = i / RATE
+        s = math.sin(t * 2 * math.pi * 880) + 0.6 * math.sin(t * 2 * math.pi * 1390) + 0.3 * math.sin(t * 2 * math.pi * 2210)
+        out.append(0.22 * s * envelope(i, n, 0.001, 2.5))
+    return out
+
+
+def pylon_down():
+    """Falling electric whine over a crackling burst."""
+    rnd = random.Random(33)
+    n = int(RATE * 1.1)
+    out, phase, y = [], 0.0, 0.0
+    for i in range(n):
+        f = 1400 * (1 - i / n) ** 2 + 80
+        phase += f / RATE
+        y += 0.4 * (rnd.uniform(-1, 1) - y)
+        whine = 1.0 if (phase % 1) < 0.5 else -1.0
+        out.append((0.25 * whine + 0.6 * y) * envelope(i, n, 0.003, 1.4))
+    return out
+
+
 def alarm():
     n = int(RATE * 1.0)
     out, phase = [], 0.0
@@ -312,6 +337,8 @@ def build_sounds():
     write_wav("door.wav", door_sound())
     write_wav("alarm.wav", alarm())
     write_wav("flare.wav", flare_sound())
+    write_wav("shield_hit.wav", shield_hit())
+    write_wav("pylon_down.wav", pylon_down())
 
 
 if __name__ == "__main__":

@@ -21,7 +21,8 @@ class Game
   DARK_HEADLIGHT  = [0.05, 16.0]
   DARK_LEVEL      = 0.2
   TITLE           = 'CORE BREACH'
-  MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120] }
+  MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120],
+                      pylon: [110, 230, 255], boss: [255, 90, 230] }
   KEY_COLORS      = { blue: [60, 120, 255], yellow: [240, 200, 40], red: [240, 60, 60] }
   KEY_PICKUPS     = { blue_key: :blue, yellow_key: :yellow, red_key: :red }
   START_KEYS      = [:one, :two, :three, :four, :five, :six, :seven, :eight, :nine]
@@ -93,7 +94,11 @@ class Game
         @pickups << Pickup.new(kind, pos)
       end
     end
-    @reactor = Reactor.new(@level.reactor_pos)
+    @reactor = @level.reactor_pos ? Reactor.new(@level.reactor_pos) : nil
+    @boss = @level.boss_pos ? Boss.new(@level.boss_pos) : nil
+    @pylons = @level.pylons.map { |p| Pylon.new(p) }
+    @pylon_total = @pylons.size
+    @shield_hint_shown = false
     grid = @level.grid
     exits = @level.exit_cells
     @automap = D3D::GridMap.new(grid, edge_color: lambda { |n, tag|
@@ -274,6 +279,8 @@ class Game
     update_ship
     update_robots
     update_reactor
+    update_boss
+    @pylons.each { |p| p.hit_flash -= DT; p.phase += DT }
     update_projectiles
     update_flares
     update_particles
@@ -705,6 +712,7 @@ class Game
 
   def update_reactor
     r = @reactor
+    return unless r
     r.spin += DT
     r.hit_flash -= DT
     return if r.destroyed
@@ -732,14 +740,144 @@ class Game
     r.hit_flash = 0.1
     return if r.hp > 0
     r.destroyed = true
-    @score += 5000
+    objective_complete(r.pos, 5000)
+  end
+
+  # Reactor or boss destroyed: big explosion, countdown starts, exit opens.
+  def objective_complete(pos, points)
+    @score += points
     @countdown = @level.defn::COUNTDOWN
-    explode(r.pos, 5.0, [255, 200, 90])
-    6.times { explode(V.madd(r.pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
+    explode(pos, 5.0, [255, 200, 90])
+    6.times { explode(V.madd(pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
     @shake = 2.0
     exit_door = @level.door_idx(:exit)
     @level.open_door(exit_door) if exit_door
     message level_text(:objective_done), 8
+  end
+
+  # ================================================================= boss
+
+  def boss_shielded?
+    !@pylons.empty?
+  end
+
+  def update_boss
+    b = @boss
+    return unless b
+    s = @ship
+    b.phase += DT
+    b.hit_flash -= DT
+    b.shield_flash -= DT
+    b.cooldown -= DT
+    b.summon_cooldown -= DT
+    b.contact_cooldown -= DT
+    b.think += 1
+    to_p = V.sub(s.pos, b.pos)
+    dist = V.len(to_p)
+    if b.think % 10 == 0
+      b.sees = s.alive && dist < 110 && @level.los?(b.pos, s.pos)
+      b.last_seen = s.pos.dup if b.sees
+    end
+
+    desired = [0.0, Math.sin(b.phase * 0.7) * 3.0, 0.0]
+    if b.last_seen
+      dir = V.norm(V.sub(b.last_seen, b.pos))
+      b.fwd = V.norm(V.lerp(b.fwd, dir, [1.2 * DT, 1.0].min))
+      if dist > 45
+        desired = V.madd(desired, dir, 10.0)
+      elsif dist < 25
+        desired = V.madd(desired, dir, -8.0)
+      end
+    end
+    b.vel = V.lerp(b.vel, desired, [2.0 * DT, 1.0].min)
+    b.pos = V.madd(b.pos, b.vel, DT)
+    @level.collide_sphere(b.pos, Boss::RADIUS)
+
+    if b.sees && b.cooldown <= 0 && V.dot(b.fwd, V.norm(to_p)) > 0.8
+      boss_fire(b)
+      b.cooldown = 2.0
+    end
+    boss_summon(b) if b.sees && b.summon_cooldown <= 0
+
+    if s.alive && dist < Boss::RADIUS + Ship::RADIUS + 0.5 && b.contact_cooldown <= 0
+      damage_ship(15)
+      s.vel = V.madd(s.vel, V.norm(to_p), 40)
+      b.contact_cooldown = 1.0
+    end
+  end
+
+  # 5-shot spread from one of the two cannons, alternating sides.
+  def boss_fire(b)
+    right, up = V.basis_from_forward(b.fwd)
+    b.spread_side = -b.spread_side
+    muzzle = V.madd(V.madd(b.pos, right, 4.6 * b.spread_side), b.fwd, 5.0)
+    aim = V.norm(V.sub(@ship.pos, muzzle))
+    [-0.16, -0.08, 0.0, 0.08, 0.16].each do |spread|
+      dir = V.norm(V.madd(aim, right, spread))
+      @projectiles << Projectile.new(muzzle.dup, V.scale(dir, 55), :enemy, 10, :plasma, [255, 90, 230], 2.4)
+    end
+    add_light(muzzle, 30, [1.0, 0.4, 0.9], 0.9, 0.15)
+    play :robot_shot, 0.7, b.pos
+  end
+
+  # Calls two drones, as long as fewer than 4 of its drones are around.
+  def boss_summon(b)
+    b.summon_cooldown = 20.0
+    nearby = @robots.count { |rb| rb.kind == :drone && V.dist2(rb.pos, b.pos) < 80**2 }
+    return if nearby >= 4
+    right = V.basis_from_forward(b.fwd)[0]
+    [-1, 1].each do |side|
+      d = Robot.new(:drone, V.madd(b.pos, right, side * 10.0))
+      @level.collide_sphere(d.pos, d.radius)
+      d.alert = 6.0
+      d.last_seen = @ship.pos.dup
+      @robots << d
+    end
+    add_light(b.pos, 50, [1.0, 0.3, 0.9], 1.2, 0.5)
+    message 'The Warden calls for reinforcements!', 3
+  end
+
+  def damage_boss(amount)
+    b = @boss
+    return unless b
+    if boss_shielded?
+      b.shield_flash = 0.3
+      play :shield_hit, 0.5, b.pos
+      unless @shield_hint_shown
+        message "The Warden is shielded. Destroy the #{@pylon_total} shield pylons!", 5
+        @shield_hint_shown = true
+      end
+      return
+    end
+    b.hp -= amount
+    b.hit_flash = 0.1
+    return if b.hp > 0
+    pos = b.pos
+    @boss = nil
+    @kills += 1
+    @total_kills += 1
+    objective_complete(pos, 8000)
+  end
+
+  def damage_pylon(p, amount)
+    p.hp -= amount
+    p.hit_flash = 0.1
+    return if p.hp > 0
+    @pylons.delete(p)
+    @score += 500
+    explode(p.pos, 2.0, [120, 230, 255])
+    play :pylon_down, 0.8, p.pos
+    if @pylons.empty?
+      message(@boss ? "All shield pylons destroyed! The Warden's shield is down!" : 'All shield pylons destroyed!', 5)
+    else
+      message "Shield pylon destroyed. #{@pylons.size} remaining.", 4
+    end
+  end
+
+  # Distance test against the pylon's upright capsule.
+  def pylon_hit?(p, pos, r)
+    y = D3D.clamp(pos[1], p.pos[1] - Pylon::HALF_HEIGHT, p.pos[1] + Pylon::HALF_HEIGHT)
+    V.dist2(pos, [p.pos[0], y, p.pos[2]]) < (Pylon::RADIUS + r)**2
   end
 
   def update_countdown
@@ -788,8 +926,19 @@ class Game
             dead = true
             break
           end
-          if !@reactor.destroyed && V.dist2(@reactor.pos, pr.pos) < Reactor::RADIUS**2
+          if @reactor && !@reactor.destroyed && V.dist2(@reactor.pos, pr.pos) < Reactor::RADIUS**2
             impact(pr, @reactor)
+            dead = true
+            break
+          end
+          if @boss && V.dist2(@boss.pos, pr.pos) < Boss::RADIUS**2
+            impact(pr, @boss)
+            dead = true
+            break
+          end
+          pylon = @pylons.find { |p| pylon_hit?(p, pr.pos, pr.size * 0.5) }
+          if pylon
+            impact(pr, pylon)
             dead = true
             break
           end
@@ -816,8 +965,17 @@ class Game
         dmg = rb == target ? pr.damage : pr.damage * 0.6 * (1 - d / MISSILE_SPLASH)
         damage_robot(rb, dmg, :missile)
       end
-      rd = V.dist(@reactor.pos, pr.pos)
-      damage_reactor(target == @reactor ? pr.damage : pr.damage * 0.5) if rd < MISSILE_SPLASH + Reactor::RADIUS
+      if @reactor
+        rd = V.dist(@reactor.pos, pr.pos)
+        damage_reactor(target == @reactor ? pr.damage : pr.damage * 0.5) if rd < MISSILE_SPLASH + Reactor::RADIUS
+      end
+      if @boss && V.dist(@boss.pos, pr.pos) < MISSILE_SPLASH + Boss::RADIUS
+        damage_boss(target == @boss ? pr.damage : pr.damage * 0.5)
+      end
+      @pylons.dup.each do |p|
+        next unless pylon_hit?(p, pr.pos, MISSILE_SPLASH * 0.5)
+        damage_pylon(p, p == target ? pr.damage : pr.damage * 0.5)
+      end
       sd = V.dist(@ship.pos, pr.pos)
       damage_ship(20 * (1 - sd / MISSILE_SPLASH)) if sd < MISSILE_SPLASH * 0.7
     else
@@ -825,6 +983,10 @@ class Game
         damage_robot(target, pr.damage, pr.kind)
       elsif target.is_a?(Reactor)
         damage_reactor(pr.damage)
+      elsif target.is_a?(Boss)
+        damage_boss(pr.damage)
+      elsif target.is_a?(Pylon)
+        damage_pylon(target, pr.damage)
       end
       sparks(pr.pos, pr.color, 5)
       add_light(pr.pos, 14, pr.color.map { |c| c / 255.0 }, 0.8, 0.12)
@@ -923,9 +1085,11 @@ class Game
     @automap.update(args.inputs)
 
     markers = []
-    if !@reactor.destroyed && @automap.explored?(@reactor.pos)
+    if @reactor && !@reactor.destroyed && @automap.explored?(@reactor.pos)
       markers << [@reactor.pos, [255, 150, 40], 6]
     end
+    @pylons.each { |p| markers << [p.pos, MAP_COLORS[:pylon], 3] if @automap.explored?(p.pos) }
+    markers << [@boss.pos, MAP_COLORS[:boss], 7] if @boss && @automap.explored?(@boss.pos)
     @pickups.each do |pk|
       next unless pk.kind == :blue_key || pk.kind == :red_key
       next unless @automap.explored?(pk.pos)
@@ -940,7 +1104,9 @@ class Game
     label(out, 20, 700, 'You', 18, [255, 230, 60])
     legend = [['Blue door / key', MAP_COLORS[:blue]], ['Yellow door / key', MAP_COLORS[:yellow]],
               ['Red door / key', MAP_COLORS[:red]], ['Escape route', MAP_COLORS[:exit]]]
-    legend << ['Reactor', [255, 150, 40]] unless @reactor.destroyed
+    legend << ['Reactor', [255, 150, 40]] if @reactor && !@reactor.destroyed
+    legend << ['Shield pylon', MAP_COLORS[:pylon]] unless @pylons.empty?
+    legend << ['The Warden', MAP_COLORS[:boss]] if @boss
     legend.each_with_index { |(text, col), n| label(out, 20, 676 - n * 24, text, 18, col) }
     if @countdown
       label(out, 1260, 700, format('SELF DESTRUCT  %02d', @countdown.ceil), 24, [255, 60, 40], 1)
@@ -978,6 +1144,7 @@ class Game
     end
 
     render_reactor(r, pos)
+    render_boss(r, pos, lights)
 
     flare_lights.each do |f|
       next unless V.dist2(f[:pos], pos) < r.fog**2
@@ -1104,9 +1271,34 @@ class Game
     end
   end
 
+  def render_boss(r, cam, lights)
+    @pylons.each do |p|
+      next unless V.dist2(p.pos, cam) < r.fog**2 && @level.los?(cam, p.pos, 3.0)
+      spin = p.phase * 0.8
+      fwd = [Math.sin(spin), 0.0, Math.cos(spin)]
+      rgt, u = V.basis_from_forward(fwd)
+      light = light_near(p.pos, lights)
+      r.draw_mesh(MESHES[:pylon], p.pos, rgt, u, fwd, 1.0, light, p.hit_flash > 0 ? 0.6 : 0.0, ambient: mesh_ambient(light))
+      pulse = 0.8 + 0.2 * Math.sin(p.phase * 4)
+      r.draw_glow(V.madd(p.pos, [0.0, 1.0, 0.0], 1.0), 9.0 * pulse, 90, 220, 255, 150)
+    end
+
+    b = @boss
+    return unless b && V.dist2(b.pos, cam) < r.fog**2 && @level.los?(cam, b.pos, 3.0)
+    rgt, u = V.basis_from_forward(b.fwd)
+    light = light_near(b.pos, lights)
+    r.draw_mesh(MESHES[:warden], b.pos, rgt, u, b.fwd, 1.0, light, b.hit_flash > 0 ? 0.5 : 0.0,
+                ambient: mesh_ambient(light))
+    r.draw_glow(b.pos, 7.0 + Math.sin(b.phase * 3) * 1.0, 255, 80, 210, 140)
+    return unless boss_shielded?
+    shield = 95 + (b.shield_flash > 0 ? 130 : 0) + (Math.sin(b.phase * 2) * 25).to_i
+    r.draw_glow(b.pos, 24.0, 70, 150, 255, shield)
+    r.draw_glow(b.pos, 15.0, 120, 190, 255, shield / 2)
+  end
+
   def render_reactor(r, cam)
     rc = @reactor
-    return unless V.dist2(rc.pos, cam) < 140**2
+    return unless rc && V.dist2(rc.pos, cam) < 140**2
     ang = rc.spin * 0.6
     fwd = [Math.sin(ang), 0.0, Math.cos(ang)]
     right, up = V.basis_from_forward(fwd)
@@ -1168,10 +1360,10 @@ class Game
     label(out, 1250, 44, 'SCORE', 16, [170, 170, 190], 1)
     label(out, 1250, 22, @score.to_s, 26, [255, 255, 255], 1)
 
-    reactor_hp = @reactor.destroyed ? 0 : @reactor.hp
-    if !@reactor.destroyed && @reactor.hp < 400
-      label(out, 640, 690, "REACTOR INTEGRITY #{(reactor_hp / 4.0).ceil}%", 20, [255, 170, 60], 0.5)
+    if @reactor && !@reactor.destroyed && @reactor.hp < 400
+      label(out, 640, 690, "REACTOR INTEGRITY #{(@reactor.hp / 4.0).ceil}%", 20, [255, 170, 60], 0.5)
     end
+    render_boss_hud(out) if @boss
 
     if @countdown
       secs = @countdown.ceil
@@ -1187,6 +1379,21 @@ class Game
     unless s.alive
       label(out, 640, 380, 'SHIP DESTROYED', 48, [255, 90, 60], 0.5)
     end
+  end
+
+  # Pylons left while the Warden is shielded; its health bar once you've met it.
+  def render_boss_hud(out)
+    if @boss.last_seen
+      x = 440
+      col = boss_shielded? ? [110, 170, 255] : [255, 90, 230]
+      label(out, 640, 698, boss_shielded? ? 'THE WARDEN  (SHIELDED)' : 'THE WARDEN', 16, col, 0.5)
+      out << { x: x, y: 676, w: 400, h: 12, r: 40, g: 30, b: 50, path: :solid, primitive_marker: :sprite }
+      w = (400 * @boss.hp / Boss::MAX_HP.to_f).to_i
+      out << { x: x, y: 676, w: w, h: 12, r: col[0], g: col[1], b: col[2], path: :solid, primitive_marker: :sprite }
+    end
+    return unless boss_shielded?
+    y = @boss.last_seen ? 656 : 690
+    label(out, 640, y, "SHIELD PYLONS  #{@pylons.size} / #{@pylon_total}", 18, MAP_COLORS[:pylon], 0.5)
   end
 
   def gauge(out, x, y, name, value, max, col)
