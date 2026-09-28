@@ -49,14 +49,21 @@ class Ship
 end
 
 class Robot
+  # ram: contact damage for robots that fly into the ship.
+  # armor: damage multiplier per projectile kind (missing = 1.0).
+  # stationary: never moves, only turns (wall turrets).
   STATS = {
-    drone:  { hp: 30,  radius: 2.4, speed: 20, turn: 2.4, fire: 1.5, score: 100 },
-    hunter: { hp: 22,  radius: 2.4, speed: 34, turn: 3.2, fire: nil, score: 150 },
-    brute:  { hp: 110, radius: 3.6, speed: 11, turn: 1.3, fire: 2.4, score: 300 }
+    drone:    { hp: 30,  radius: 2.4, speed: 20, turn: 2.4, fire: 1.5, score: 100 },
+    hunter:   { hp: 22,  radius: 2.4, speed: 34, turn: 3.2, fire: nil, score: 150, ram: 12 },
+    brute:    { hp: 110, radius: 3.6, speed: 11, turn: 1.3, fire: 2.4, score: 300 },
+    turret:   { hp: 60,  radius: 2.6, speed: 0,  turn: 1.8, fire: 1.6, score: 200, range: 80,
+                armor: { laser: 0.25 }, stationary: true },
+    splitter: { hp: 40,  radius: 3.0, speed: 15, turn: 2.0, fire: nil, score: 200, ram: 10 },
+    mini:     { hp: 10,  radius: 1.5, speed: 42, turn: 4.0, fire: nil, score: 50, ram: 6, scale: 0.6 }
   }
 
   attr_accessor :kind, :pos, :vel, :fwd, :hp, :cooldown, :alert, :sees, :last_seen,
-                :hit_flash, :phase, :contact_cooldown, :think
+                :hit_flash, :phase, :contact_cooldown, :think, :mount, :burst
 
   def initialize(kind, pos)
     @kind = kind
@@ -72,6 +79,8 @@ class Robot
     @phase = rand * 10
     @contact_cooldown = 0
     @think = rand(10)
+    @mount = nil # wall normal of a mounted turret
+    @burst = 0
   end
 
   def stats
@@ -80,6 +89,14 @@ class Robot
 
   def radius
     stats[:radius]
+  end
+
+  def scale
+    stats[:scale] || 1.0
+  end
+
+  def max_hp
+    stats[:hp]
   end
 end
 

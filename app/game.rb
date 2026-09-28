@@ -79,10 +79,16 @@ class Game
     @play_time = 0
     @door_msg_cooldown = 0
     @kills = 0
-    @level.spawns.each do |kind, pos|
-      pos = find_open(pos)
+    @armor_hint_shown = false
+    @level.spawns.each do |kind, pos, mount|
+      pos = find_open(pos) unless mount
       if Robot::STATS[kind]
-        @robots << Robot.new(kind, pos)
+        rb = Robot.new(kind, pos)
+        if mount
+          rb.mount = mount
+          rb.fwd = mount.dup
+        end
+        @robots << rb
       else
         @pickups << Pickup.new(kind, pos)
       end
@@ -539,7 +545,8 @@ class Game
       dist = V.len(to_p)
 
       if rb.think % 8 == 0
-        rb.sees = s.alive && dist < 95 && @level.los?(rb.pos, s.pos)
+        in_front = rb.mount.nil? || V.dot(to_p, rb.mount) > 0
+        rb.sees = s.alive && in_front && dist < (st[:range] || 95) && @level.los?(rb.pos, s.pos)
         if rb.sees
           rb.alert = 5.0
           rb.last_seen = s.pos.dup
@@ -562,32 +569,46 @@ class Game
           end
           desired = V.madd(desired, right, Math.sin(rb.phase * 1.3) * st[:speed] * 0.7)
           desired = V.madd(desired, up, Math.cos(rb.phase * 0.9) * st[:speed] * 0.3)
-        when :hunter
+        when :hunter, :mini
           desired = V.scale(target_dir, st[:speed])
-          desired = V.madd(desired, right, Math.sin(rb.phase * 3.0) * 6)
+          desired = V.madd(desired, right, Math.sin(rb.phase * 3.0) * 6 * rb.scale)
+        when :splitter
+          desired = V.scale(target_dir, st[:speed])
+          desired = V.madd(desired, up, Math.sin(rb.phase * 1.7) * 4)
         when :brute
           desired = V.scale(target_dir, st[:speed]) if !rb.sees || dist > 26
         end
 
         if rb.sees && st[:fire] && rb.cooldown <= 0 && V.dot(rb.fwd, target_dir) > 0.9
           robot_fire(rb, right)
-          rb.cooldown = st[:fire] * (0.8 + rand * 0.4)
+          if rb.kind == :turret && rb.burst == 0
+            rb.burst = 1
+            rb.cooldown = 0.18
+          else
+            rb.burst = 0
+            rb.cooldown = st[:fire] * (0.8 + rand * 0.4)
+          end
         end
 
-        if rb.kind == :hunter && s.alive && dist < rb.radius + Ship::RADIUS + 0.6 && rb.contact_cooldown <= 0
-          damage_ship(12)
+        if st[:ram] && s.alive && dist < rb.radius + Ship::RADIUS + 0.6 && rb.contact_cooldown <= 0
+          damage_ship(st[:ram])
           push = V.norm(to_p)
           s.vel = V.madd(s.vel, push, 35)
           rb.vel = V.madd(rb.vel, push, -30)
           rb.contact_cooldown = 1.0
           explode(V.lerp(rb.pos, s.pos, 0.5), 0.6, [180, 255, 180], false)
         end
+      elsif rb.mount
+        # idle turret: slow sweep across the space in front of its wall
+        tangent = V.basis_from_forward(rb.mount)[0]
+        rb.fwd = V.norm(V.madd(rb.mount, tangent, Math.sin(rb.phase * 0.5) * 0.9))
       else
         # idle patrol: bob and slowly turn
         rb.fwd = V.norm(V.madd(rb.fwd, V.basis_from_forward(rb.fwd)[0], 0.3 * DT))
         desired = [0.0, Math.sin(rb.phase) * 2.0, 0.0]
       end
 
+      next if st[:stationary]
       rb.vel = V.lerp(rb.vel, desired, [3.0 * DT, 1.0].min)
       rb.pos = V.madd(rb.pos, rb.vel, DT)
       hit = @level.collide_sphere(rb.pos, rb.radius)
@@ -605,9 +626,13 @@ class Game
         d2 = V.dist2(a.pos, b.pos)
         next if d2 >= min * min || d2 < 1e-6
         d = Math.sqrt(d2)
-        push = V.scale(V.sub(a.pos, b.pos), (min - d) / d * 0.5)
-        a.pos = V.add(a.pos, push)
-        b.pos = V.sub(b.pos, push)
+        a_fixed = a.stats[:stationary]
+        b_fixed = b.stats[:stationary]
+        next if a_fixed && b_fixed
+        share = a_fixed || b_fixed ? 1.0 : 0.5
+        push = V.scale(V.sub(a.pos, b.pos), (min - d) / d * share)
+        a.pos = V.add(a.pos, push) unless a_fixed
+        b.pos = V.sub(b.pos, push) unless b_fixed
       end
     end
   end
@@ -616,6 +641,8 @@ class Game
     muzzle = V.madd(rb.pos, rb.fwd, rb.radius + 0.5)
     aim = V.norm(V.sub(@ship.pos, muzzle))
     case rb.kind
+    when :turret
+      @projectiles << Projectile.new(muzzle, V.scale(aim, 64), :enemy, 7, :plasma, [255, 160, 40], 1.6)
     when :drone
       @projectiles << Projectile.new(muzzle, V.scale(aim, 62), :enemy, 8, :plasma, [255, 90, 40], 1.8)
     when :brute
@@ -630,7 +657,16 @@ class Game
     play :robot_shot, 0.4, rb.pos
   end
 
-  def damage_robot(rb, amount)
+  def damage_robot(rb, amount, kind = nil)
+    armor = rb.stats[:armor] && rb.stats[:armor][kind]
+    if armor
+      amount *= armor
+      sparks(rb.pos, [200, 200, 220], 4)
+      unless @armor_hint_shown
+        message 'Turret armour deflects lasers. Use missiles!', 4
+        @armor_hint_shown = true
+      end
+    end
     rb.hp -= amount
     rb.hit_flash = 0.1
     rb.alert = 6.0
@@ -640,7 +676,8 @@ class Game
     @score += rb.stats[:score]
     @kills += 1
     @total_kills += 1
-    explode(rb.pos, rb.kind == :brute ? 2.2 : 1.4, [255, 170, 70])
+    explode(rb.pos, { brute: 2.2, mini: 0.8 }.fetch(rb.kind, 1.4), [255, 170, 70])
+    split(rb) if rb.kind == :splitter
     drop = rand
     if drop < 0.22
       @pickups << Pickup.new(:energy, rb.pos.dup)
@@ -648,6 +685,19 @@ class Game
       @pickups << Pickup.new(:shield, rb.pos.dup)
     elsif drop < 0.48
       @pickups << Pickup.new(:missiles, rb.pos.dup)
+    end
+  end
+
+  # A destroyed splitter releases two mini-hunters that attack at once.
+  def split(rb)
+    right = V.basis_from_forward(rb.fwd)[0]
+    [-1, 1].each do |side|
+      mini = Robot.new(:mini, V.madd(rb.pos, right, side * 2.0))
+      @level.collide_sphere(mini.pos, mini.radius)
+      mini.vel = V.scale(right, side * 20.0)
+      mini.alert = 6.0
+      mini.last_seen = @ship.pos.dup
+      @robots << mini
     end
   end
 
@@ -764,7 +814,7 @@ class Game
         d = V.dist(rb.pos, pr.pos)
         next if d > MISSILE_SPLASH
         dmg = rb == target ? pr.damage : pr.damage * 0.6 * (1 - d / MISSILE_SPLASH)
-        damage_robot(rb, dmg)
+        damage_robot(rb, dmg, :missile)
       end
       rd = V.dist(@reactor.pos, pr.pos)
       damage_reactor(target == @reactor ? pr.damage : pr.damage * 0.5) if rd < MISSILE_SPLASH + Reactor::RADIUS
@@ -772,7 +822,7 @@ class Game
       damage_ship(20 * (1 - sd / MISSILE_SPLASH)) if sd < MISSILE_SPLASH * 0.7
     else
       if target.is_a?(Robot)
-        damage_robot(target, pr.damage)
+        damage_robot(target, pr.damage, pr.kind)
       elsif target.is_a?(Reactor)
         damage_reactor(pr.damage)
       end
@@ -924,9 +974,7 @@ class Game
       rgt, u = V.basis_from_forward(rb.fwd)
       flash = rb.hit_flash > 0 ? 0.7 : 0.0
       light = light_near(rb.pos, lights)
-      r.draw_mesh(MESHES[rb.kind], rb.pos, rgt, u, rb.fwd, 1.0, light, flash, ambient: mesh_ambient(light))
-      eye = V.madd(rb.pos, rb.fwd, rb.kind == :brute ? 2.2 : 2.0)
-      r.draw_glow(eye, 1.6, 255, 80, 60, 200)
+      draw_robot(r, rb, rgt, u, light, flash)
     end
 
     render_reactor(r, pos)
@@ -991,6 +1039,29 @@ class Game
     end
 
     r.flush(args.outputs)
+  end
+
+  def draw_robot(r, rb, rgt, u, light, flash)
+    amb = mesh_ambient(light)
+    case rb.kind
+    when :turret
+      base_fwd, base_right = V.basis_from_forward(rb.mount) # any direction along the wall
+      r.draw_mesh(MESHES[:turret_base], rb.pos, base_right, rb.mount, base_fwd, 1.0, light, flash, ambient: amb)
+      gun_pos = V.madd(rb.pos, rb.mount, 0.9)
+      r.draw_mesh(MESHES[:turret_gun], gun_pos, rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_glow(V.madd(gun_pos, rb.fwd, 2.6), 1.4, 255, 150, 40, 200)
+    when :splitter
+      gap = (1.0 - rb.hp / rb.max_hp.to_f) * 2.4
+      r.draw_mesh(MESHES[:splitter_left], V.madd(rb.pos, rgt, -gap), rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_mesh(MESHES[:splitter_right], V.madd(rb.pos, rgt, gap), rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_glow(rb.pos, 2.5 + gap * 3.0, 120, 255, 230, 190) if gap > 0.05
+      r.draw_glow(V.madd(rb.pos, rb.fwd, 2.2), 1.4, 255, 80, 60, 200)
+    else
+      mesh = rb.kind == :mini ? MESHES[:hunter] : MESHES[rb.kind]
+      r.draw_mesh(mesh, rb.pos, rgt, u, rb.fwd, rb.scale, light, flash, ambient: amb)
+      eye = V.madd(rb.pos, rb.fwd, (rb.kind == :brute ? 2.2 : 2.0) * rb.scale)
+      r.draw_glow(eye, 1.6 * rb.scale, 255, 80, 60, 200)
+    end
   end
 
   # Dims the headlight smoothly while the camera is inside a dark room, so

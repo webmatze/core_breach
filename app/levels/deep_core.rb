@@ -1,7 +1,7 @@
 # Level 2: the deep core. Coordinates are cell indices (i = x, j = y/up, k = z).
 #
-#   Arrival dock (top) -> the Great Shaft, a 12x34x12 cell pit with ledges and
-#   bridges. Side exits of the shaft:
+#   Arrival dock (top) -> the Great Shaft, a 12x34x12 cell pit with ledges,
+#   bridges and armoured wall turrets. Side exits of the shaft:
 #     high, west:   gallery -> key room with the BLUE key
 #     middle, east: BLUE door -> blackout wing (maze) with the YELLOW key
 #     bottom, south: YELLOW door -> magma caverns with the RED key
@@ -117,6 +117,11 @@ module Levels
       l.spawn :hunter, 20, 5, 25
       l.spawn :energy, 19, 21, 21
       l.spawn :missiles, 28, 13, 25
+      l.turret 18, 30, 24, :west
+      l.turret 29, 23, 20, :east
+      l.turret 23, 18, 29, :north
+      l.turret 18, 11, 20, :west
+      l.turret 29, 8, 27, :east
 
       # west gallery / blue key room
       l.spawn :drone, 14, 28, 22
@@ -124,11 +129,13 @@ module Levels
       l.spawn :drone, 8, 30, 26
       l.spawn :blue_key, 6, 28, 22
       l.spawn :shield, 9, 26, 18
+      l.turret 3, 28, 26, :west
 
       # blackout wing
       l.spawn :hunter, 34, 15, 20
       l.spawn :drone, 38, 16, 29
-      l.spawn :hunter, 39, 15, 17
+      l.spawn :splitter, 39, 15, 17
+      l.spawn :splitter, 34, 14, 29
       l.spawn :brute, 43, 16, 25
       l.spawn :energy, 34, 14, 16
       l.spawn :yellow_key, 43, 14, 16
@@ -136,7 +143,10 @@ module Levels
       # magma caverns
       l.spawn :drone, 16, 4, 10
       l.spawn :brute, 25, 3, 4
-      l.spawn :hunter, 30, 6, 9
+      l.spawn :splitter, 30, 6, 9
+      l.spawn :splitter, 16, 3, 9
+      l.turret 34, 5, 8, :east
+      l.turret 14, 4, 4, :west
       l.spawn :drone, 33, 5, 7
       l.spawn :hunter, 17, 2, 3
       l.spawn :shield, 22, 2, 10

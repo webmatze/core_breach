@@ -56,6 +56,31 @@ module Models
     m
   end
 
+  # Wall turret, part 1: flat armoured dome, local +y points away from the wall.
+  def self.turret_base
+    m = D3D::FlatMesh.new
+    m.bipyramid 8, 2.3, 1.1, 0.25, [[110, 115, 125], [85, 90, 100]], axis: :y
+    m.box 0, 0.2, 0, 2.5, 0.15, 0.3, [255, 140, 30], emissive: true
+    m
+  end
+
+  # Wall turret, part 2: gun body with a barrel along +z.
+  def self.turret_gun
+    m = D3D::FlatMesh.new
+    m.box 0, 0, 0, 0.9, 0.7, 0.9, [140, 140, 150], [100, 100, 110]
+    m.box 0, 0, 1.6, 0.22, 0.22, 0.9, [70, 70, 80]
+    m.box 0, 0, 2.55, 0.26, 0.26, 0.08, [255, 150, 40], emissive: true
+    m
+  end
+
+  # Splitter halves: two teal wedges that drift apart as the robot is damaged.
+  def self.splitter_half(side)
+    m = D3D::FlatMesh.new
+    m.bipyramid 4, 1.5, 2.3, 1.5, [[40, 200, 190], [30, 140, 150]], center: [side * 0.9, 0, 0]
+    m.box side * 0.25, 0, 0.4, 0.12, 0.9, 0.9, [120, 255, 230], emissive: true
+    m
+  end
+
   def self.reactor_core
     m = D3D::FlatMesh.new
     m.bipyramid 8, 4.0, 5.0, 5.0, [[255, 150, 40], [255, 90, 20]], axis: :y, emissive: true
@@ -103,6 +128,10 @@ MESHES = {
   core:    Models.reactor_core,
   frame:   Models.reactor_frame,
   missile: Models.missile,
+  turret_base: Models.turret_base,
+  turret_gun: Models.turret_gun,
+  splitter_left: Models.splitter_half(-1),
+  splitter_right: Models.splitter_half(1),
   shield:  Models.pickup([60, 140, 255]),
   energy:  Models.pickup([255, 220, 50]),
   missiles: Models.pickup([220, 60, 60]),

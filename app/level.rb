@@ -79,7 +79,20 @@ class Level
   end
 
   def spawn(kind, i, j, k)
-    @spawns << [kind, @grid.cell_center(i, j, k)]
+    @spawns << [kind, @grid.cell_center(i, j, k), nil]
+  end
+
+  WALLS = { west: [-1, 0, 0], east: [1, 0, 0], down: [0, -1, 0], up: [0, 1, 0],
+            south: [0, 0, -1], north: [0, 0, 1] }
+
+  # A turret mounted on the given wall of open cell (i, j, k).
+  def turret(i, j, k, wall)
+    d = WALLS[wall]
+    unless @grid.open?(i, j, k) && !@grid.open?(i + d[0], j + d[1], k + d[2])
+      puts "Level #{@defn::TITLE}: turret at #{[i, j, k]} has no #{wall} wall"
+    end
+    pos = V.madd(@grid.cell_center(i, j, k), d, CS * 0.5 - 1.0)
+    @spawns << [:turret, pos, V.scale(d, -1.0)]
   end
 
   # ----------------------------------------------------------- queries
