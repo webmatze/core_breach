@@ -129,8 +129,8 @@ class Game
   def begin_level
     @state = :playing
     grab_mouse(true)
-    message "LEVEL #{@level_index + 1}: #{@level.defn::TITLE.upcase}", 5
-    message level_text(:briefing), 7
+    message "LEVEL #{@level_index + 1}: #{@level.defn::TITLE.upcase}", 5, true
+    message level_text(:briefing), 7, true
     play :door
   end
 
@@ -514,7 +514,7 @@ class Game
       message '4 concussion missiles!', 2
     when *KEY_PICKUPS.keys
       @keys[KEY_PICKUPS[pk.kind]] = true
-      message level_text(pk.kind), 5
+      message level_text(pk.kind), 5, true
     end
     @score += 50
     @pickup_flash = 1
@@ -755,7 +755,7 @@ class Game
     @shake = 2.0
     exit_door = @level.door_idx(:exit)
     @level.open_door(exit_door) if exit_door
-    message level_text(:objective_done), 8
+    message level_text(:objective_done), 8, true
   end
 
   # Caves in scheduled cells once their time has come, but never the cell the
@@ -792,7 +792,7 @@ class Game
     play :rumble, 0.9, center
     return if @collapse_warned
     @collapse_warned = true
-    message level_text(:collapse), 5 if level_text(:collapse)
+    message level_text(:collapse), 5, true if level_text(:collapse)
   end
 
   # ================================================================= boss
@@ -1080,10 +1080,33 @@ class Game
 
   # ================================================================= messages / sound
 
-  def message(text, time)
+  MAX_MESSAGES = 3
+
+  # Shows a message for at least `time` seconds and long enough to read it
+  # (about 2.5 s plus 0.06 s per character). When the screen is full, the
+  # oldest unimportant message makes room first; important ones (briefing,
+  # key hints, escape instructions) are only dropped as a last resort.
+  def message(text, time, important = false)
     @messages.reject! { |m| m[:text] == text }
-    @messages << { text: text, time: time }
-    @messages.shift while @messages.size > 3
+    time = [time, 2.5 + text.size * 0.06].max
+    @messages << { text: text, time: time, important: important }
+    while @messages.size > MAX_MESSAGES
+      victim = @messages.find { |m| !m[:important] } || @messages.first
+      @messages.delete(victim)
+    end
+  end
+
+  # What the player should do next, shown permanently in the HUD.
+  def current_objective
+    return 'ESCAPE! Follow the green lights to the exit' if @countdown
+    kind = @level.doors.values.find { |k| k != :exit }
+    return(@keys[kind] ? "Open the #{kind.to_s.upcase} door" : "Find the #{kind.to_s.upcase} key") if kind
+    if @boss
+      return "Destroy the shield pylons (#{@pylons.size} left)" unless @pylons.empty?
+      return 'Destroy the Warden'
+    end
+    return 'Destroy the reactor' if @reactor && !@reactor.destroyed
+    ''
   end
 
   def play(name, gain = 0.5, pos = nil)
@@ -1396,6 +1419,8 @@ class Game
       end
     end
     label(out, 20, 700, "LEVEL #{@level_index + 1}  #{@level.defn::TITLE.upcase}", 16, [150, 150, 170])
+    objective = current_objective
+    label(out, 20, 676, "> #{objective}", 18, @countdown ? [120, 255, 150] : [255, 220, 140]) unless objective.empty?
     label(out, 920, 44, 'SHIPS', 16, [170, 170, 190])
     label(out, 920, 22, [@lives, 0].max.to_s, 26, [255, 255, 255])
     label(out, 1250, 44, 'SCORE', 16, [170, 170, 190], 1)
@@ -1455,6 +1480,7 @@ class Game
     out = args.outputs.primitives
     out << { x: 0, y: 0, w: 1280, h: 720, r: 0, g: 0, b: 0, a: 150, path: :solid, primitive_marker: :sprite }
     label(out, 640, 420, 'PAUSED', 64, [255, 255, 255], 0.5)
+    label(out, 640, 500, "Objective: #{current_objective}", 24, [255, 220, 140], 0.5) unless current_objective.empty?
     label(out, 640, 340, 'ESC or click to resume   -   T to quit to title', 24, [200, 200, 210], 0.5)
     kb = args.inputs.keyboard
     if kb.key_down.escape || args.inputs.mouse.click || args.inputs.controller_one.key_down.start
