@@ -10,7 +10,7 @@ def clamp(v, lo, hi)
 end
 
 require 'app/level.rb'
-require 'app/level_data.rb'
+require 'app/levels.rb'
 require 'app/meshes.rb'
 require 'app/entities.rb'
 require 'app/game.rb'

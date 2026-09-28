@@ -1,4 +1,4 @@
-# The mine: a D3D::CellGrid plus the game rules on top of it (key doors, the
+# A level: a D3D::CellGrid plus the game rules on top of it (key doors, the
 # exit hatch, spawn points, player start and reactor position).
 CS = 10.0 # cell size in world units
 
@@ -12,17 +12,23 @@ class Level
     grate:     { path: 'sprites/game/grate.png', size: 128 },
     door_blue: { path: 'sprites/game/door_blue.png', size: 128 },
     door_red:  { path: 'sprites/game/door_red.png', size: 128 },
+    door_yellow: { path: 'sprites/game/door_yellow.png', size: 128 },
     door_exit: { path: 'sprites/game/grate.png', size: 128 }
   }
-  DOOR_MATERIALS = { blue: :door_blue, red: :door_red, exit: :door_exit }
+  DOOR_MATERIALS = { blue: :door_blue, yellow: :door_yellow, red: :door_red, exit: :door_exit }
 
-  attr_reader :grid, :spawns, :player_start, :exit_cells, :reactor_pos
+  attr_reader :defn, :grid, :spawns, :player_start, :exit_cells, :reactor_pos, :lamps, :beacons
 
-  def initialize
-    @grid = D3D::CellGrid.new(48, 16, 48, cell_size: CS)
+  # defn: a level definition module from Levels::ALL
+  def initialize(defn)
+    @defn = defn
+    nx, ny, nz = defn::SIZE
+    @grid = D3D::CellGrid.new(nx, ny, nz, cell_size: CS)
     @spawns = []
     @exit_cells = {}
-    LevelData.build(self)
+    @lamps = []
+    @beacons = []
+    defn.build(self)
     @grid.rebuild_faces
   end
 
@@ -57,6 +63,19 @@ class Level
 
   def set_player_start(pos)
     @player_start = pos
+  end
+
+  # A fixed wall lamp at cell coordinates (fractions allowed), lighting the walls
+  # around it. color is 0..255 rgb.
+  def lamp(i, j, k, color)
+    @lamps << { pos: [i * CS, j * CS, k * CS], radius: 65, color: color.map { |c| c / 255.0 },
+                intensity: 1.0, rgb: color }
+  end
+
+  # A point on the escape route (cell coordinates, fractions allowed). Beacons
+  # switch on as pulsing green lights and map markers once the exit opens.
+  def beacon(i, j, k)
+    @beacons << [i * CS, j * CS, k * CS]
   end
 
   def spawn(kind, i, j, k)

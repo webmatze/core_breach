@@ -28,7 +28,7 @@ module D3D
       @explored_list = []
       @edges = {}
       @grid_points = (grid.nx + 1) * (grid.ny + 1) * (grid.nz + 1)
-      @blocker_count = grid.blockers.size
+      @version = grid.version
       @yaw = 0.0
       @pitch = 0.5
       @distance = 120.0
@@ -63,15 +63,15 @@ module D3D
         i, j, k = @grid.coords(n)
         add_cell_edges(i, j, k)
       end
-      @blocker_count = @grid.blockers.size
+      @version = @grid.version
     end
 
     # ------------------------------------------------------------- view
 
-    # Call when the map is opened: rebuilds after doors changed and faces the
-    # map along the pose's heading.
+    # Call when the map is opened: rebuilds after the grid changed (doors
+    # opened, cells solidified) and faces the map along the pose's heading.
     def open(pose)
-      rebuild if @grid.blockers.size != @blocker_count
+      rebuild if @grid.version != @version
       @yaw = Math.atan2(pose.fwd[0], pose.fwd[2])
       @pitch = 0.5
       @distance = 120.0

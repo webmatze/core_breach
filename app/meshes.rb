@@ -107,5 +107,6 @@ MESHES = {
   energy:  Models.pickup([255, 220, 50]),
   missiles: Models.pickup([220, 60, 60]),
   blue_key: Models.key([50, 110, 255]),
+  yellow_key: Models.key([240, 200, 40]),
   red_key:  Models.key([240, 50, 50])
 }

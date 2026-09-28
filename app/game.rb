@@ -4,7 +4,6 @@ class Game
   DRAG            = 2.9
   TURN_RATE       = 2.3
   MOUSE_SENS      = 0.0032
-  COUNTDOWN       = 50.0
   LASER_SPEED     = 190.0
   LASER_DAMAGE    = 7
   LASER_COST      = 0.45
@@ -13,7 +12,10 @@ class Game
   MISSILE_SPLASH  = 16.0
   PICKUP_RADIUS   = 5.0
   TITLE           = 'CORE BREACH'
-  MAP_COLORS      = { blue: [70, 130, 255], red: [255, 70, 70], exit: [90, 255, 120] }
+  MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120] }
+  KEY_COLORS      = { blue: [60, 120, 255], yellow: [240, 200, 40], red: [240, 60, 60] }
+  KEY_PICKUPS     = { blue_key: :blue, yellow_key: :yellow, red_key: :red }
+  START_KEYS      = [:one, :two, :three, :four, :five, :six, :seven, :eight, :nine]
 
   # What the renderer and automap need from a camera: position + basis vectors.
   View = Struct.new(:position, :right, :up, :fwd)
@@ -25,20 +27,34 @@ class Game
     @title_time = 0
     @invert_mouse = false
     @show_fps = false
-    setup_level
+    new_campaign
+    setup_level(0)
   end
 
   # ================================================================= setup
 
-  def setup_level
-    @level = Level.new
+  # Score, lives and totals that carry over from level to level.
+  def new_campaign
+    @score = 0
+    @lives = 3
+    @total_kills = 0
+    @total_time = 0
+    @carry = nil
+  end
+
+  def setup_level(index)
+    @level_index = index
+    @level = Level.new(Levels::ALL[index])
     @renderer = D3D::SceneRenderer.new(
       focal: 620, near: 0.4, fog: 140, materials: Level::MATERIALS,
       white_path: 'sprites/game/white.png', glow_path: 'sprites/game/glow.png'
     )
     @ship = Ship.new(@level.player_start)
-    @lives = 3
-    @score = 0
+    if @carry
+      @ship.shields = [@carry[:shields], 100.0].max
+      @ship.energy = [@carry[:energy], 100.0].max
+      @ship.missiles = @carry[:missiles]
+    end
     @keys = {}
     @robots = []
     @pickups = []
@@ -82,12 +98,55 @@ class Game
     pos
   end
 
-  def start_game
-    setup_level
+  def start_game(index = 0)
+    new_campaign
+    setup_level(index)
+    begin_level
+  end
+
+  def begin_level
     @state = :playing
     grab_mouse(true)
-    message 'Find the blue key. Destroy the reactor. Escape.', 6
+    message "LEVEL #{@level_index + 1}: #{@level.defn::TITLE.upcase}", 5
+    message level_text(:briefing), 7
     play :door
+  end
+
+  def level_text(key)
+    @level.defn::MESSAGES[key]
+  end
+
+  def last_level?
+    @level_index >= Levels::ALL.size - 1
+  end
+
+  def back_to_title
+    @state = :title
+    new_campaign
+    setup_level(0)
+  end
+
+  # Exit reached: bank the bonuses, then go to the intermission or the final victory screen.
+  def complete_level
+    @escape_bonus = (@countdown * 100).to_i
+    @shield_bonus = @ship.shields.to_i * 10
+    @score += @escape_bonus + @shield_bonus
+    @escape_time = @countdown
+    @messages.clear
+    grab_mouse(false)
+    play :pickup
+    if last_level?
+      @state = :victory
+      @end_reason = "You escaped the #{@level.defn::TITLE.downcase} with #{@countdown.round(1)}s to spare."
+    else
+      @state = :intermission
+    end
+  end
+
+  def next_level
+    @carry = { shields: @ship.shields, energy: @ship.energy, missiles: @ship.missiles }
+    setup_level(@level_index + 1)
+    begin_level
   end
 
   # ================================================================= main loop
@@ -116,6 +175,9 @@ class Game
     when :paused
       render_play
       render_pause
+    when :intermission
+      render_play
+      render_intermission
     when :gameover, :victory
       render_play
       render_end
@@ -174,15 +236,23 @@ class Game
     out << { x: 640, y: 50, text: 'Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B slide up/down',
              size_px: 18, anchor_x: 0.5, r: 150, g: 150, b: 160, primitive_marker: :label }
 
-    start = args.inputs.keyboard.key_down.enter || args.inputs.mouse.click ||
+    out << { x: 640, y: 80, text: "Practice: press 1-#{Levels::ALL.size} to start at a level",
+             size_px: 18, anchor_x: 0.5, r: 150, g: 150, b: 160, primitive_marker: :label }
+
+    kb = args.inputs.keyboard
+    start = kb.key_down.enter || args.inputs.mouse.click ||
             args.inputs.controller_one.key_down.start || args.inputs.controller_one.key_down.a
-    start_game if start
+    return start_game(0) if start
+    Levels::ALL.size.times do |n|
+      return start_game(n) if kb.key_down.send(START_KEYS[n])
+    end
   end
 
   # ================================================================= update
 
   def update_play
     @play_time += DT
+    @total_time += DT
     handle_flight_input if @ship.alive
     update_ship
     update_robots
@@ -315,7 +385,7 @@ class Game
           s.shields = 100.0
           s.energy = [s.energy, 100.0].max
           s.missiles = [s.missiles, 3].max
-          message 'Ship restored at the hangar.', 3
+          message level_text(:respawn), 3
         end
       end
       return
@@ -342,7 +412,7 @@ class Game
       kind = @level.doors[door]
       if kind == :exit
         if @door_msg_cooldown <= 0
-          message 'This hatch only opens when the reactor goes critical.', 3
+          message level_text(:exit_locked), 3
           @door_msg_cooldown = 3
         end
       elsif @keys[kind]
@@ -362,14 +432,7 @@ class Game
     end
 
     # exit
-    if @countdown && @level.exit_at?(s.pos)
-      @state = :victory
-      bonus = (@countdown * 100).to_i
-      @score += bonus + @ship.shields.to_i * 10
-      @end_reason = "You escaped with #{@countdown.round(1)}s to spare."
-      grab_mouse(false)
-      play :pickup
-    end
+    complete_level if @countdown && @level.exit_at?(s.pos)
   end
 
   def collect(pk)
@@ -386,12 +449,9 @@ class Game
     when :missiles
       s.missiles += 4
       message '4 concussion missiles!', 2
-    when :blue_key
-      @keys[:blue] = true
-      message 'BLUE key acquired! The blue hatch is in the floor of the big cavern.', 5
-    when :red_key
-      @keys[:red] = true
-      message 'RED key acquired! The reactor lies behind the red door.', 5
+    when *KEY_PICKUPS.keys
+      @keys[KEY_PICKUPS[pk.kind]] = true
+      message level_text(pk.kind), 5
     end
     @score += 50
     @pickup_flash = 1
@@ -530,6 +590,7 @@ class Game
     @robots.delete(rb)
     @score += rb.stats[:score]
     @kills += 1
+    @total_kills += 1
     explode(rb.pos, rb.kind == :brute ? 2.2 : 1.4, [255, 170, 70])
     drop = rand
     if drop < 0.22
@@ -573,20 +634,20 @@ class Game
     return if r.hp > 0
     r.destroyed = true
     @score += 5000
-    @countdown = COUNTDOWN
+    @countdown = @level.defn::COUNTDOWN
     explode(r.pos, 5.0, [255, 200, 90])
     6.times { explode(V.madd(r.pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
     @shake = 2.0
     exit_door = @level.door_idx(:exit)
     @level.open_door(exit_door) if exit_door
-    message 'REACTOR DESTROYED! The escape hatch in the chamber ceiling is open. GET OUT!', 8
+    message level_text(:objective_done), 8
   end
 
   def update_countdown
     return unless @countdown
     before = @countdown
     @countdown -= DT
-    @shake = [@shake, 0.25 + (1.0 - @countdown / COUNTDOWN) * 0.6].max
+    @shake = [@shake, 0.25 + (1.0 - @countdown / @level.defn::COUNTDOWN) * 0.6].max
     play(:alarm, 0.35) if before.floor != @countdown.floor && @countdown.floor.even?
     if rand < 0.05 && @ship.alive
       explode(V.madd(@ship.pos, V.random_unit, 25 + rand * 20), 1.2, [255, 140, 50], false)
@@ -765,16 +826,17 @@ class Game
       next unless @automap.explored?(pk.pos)
       markers << [pk.pos, pk.kind == :blue_key ? [70, 130, 255] : [255, 70, 70], 2.5]
     end
+    @level.beacons.each { |p| markers << [p, MAP_COLORS[:exit], 2.5] } if @countdown
     @automap.render(args.outputs, @ship.pose, markers)
 
     out = args.outputs.primitives
     label(out, 640, 700, 'AUTOMAP', 30, [255, 230, 60], 0.5)
     label(out, 640, 22, 'Mouse / arrows / A D rotate    W S / wheel zoom    TAB close', 18, [170, 170, 190], 0.5)
     label(out, 20, 700, 'You', 18, [255, 230, 60])
-    label(out, 20, 676, 'Blue door / key', 18, MAP_COLORS[:blue])
-    label(out, 20, 652, 'Red door / key', 18, MAP_COLORS[:red])
-    label(out, 20, 628, 'Escape hatch', 18, MAP_COLORS[:exit])
-    label(out, 20, 604, 'Reactor', 18, [255, 150, 40]) unless @reactor.destroyed
+    legend = [['Blue door / key', MAP_COLORS[:blue]], ['Yellow door / key', MAP_COLORS[:yellow]],
+              ['Red door / key', MAP_COLORS[:red]], ['Escape route', MAP_COLORS[:exit]]]
+    legend << ['Reactor', [255, 150, 40]] unless @reactor.destroyed
+    legend.each_with_index { |(text, col), n| label(out, 20, 676 - n * 24, text, 18, col) }
     if @countdown
       label(out, 1260, 700, format('SELF DESTRUCT  %02d', @countdown.ceil), 24, [255, 60, 40], 1)
     end
@@ -790,6 +852,9 @@ class Game
     @projectiles.each do |pr|
       lights << { pos: pr.pos, radius: 12, color: pr.color.map { |c| c / 255.0 }, intensity: 0.5 }
     end
+    beacon_lights.each { |b| lights << b if V.dist2(b[:pos], pos) < 110**2 }
+    # lamps only matter when their light can reach walls near the camera
+    @level.lamps.each { |lamp| lights << lamp if V.dist2(lamp[:pos], pos) < 110**2 }
     lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(8)
 
     r = @renderer
@@ -807,6 +872,24 @@ class Game
     end
 
     render_reactor(r, pos)
+
+    # beacon glows show beyond the fog so they can be spotted across big rooms
+    beacon_lights.each do |b|
+      next unless V.dist2(b[:pos], pos) < 260**2
+      next unless @level.los?(pos, b[:pos], 3.0)
+      # keep far beacons about as big on screen as one ~70 units away
+      grow = [Math.sqrt(V.dist2(b[:pos], pos)) / 70.0, 1.0].max
+      r.draw_glow(b[:pos], 9.0 * b[:pulse] * grow, 90, 255, 120, 200)
+      r.draw_glow(b[:pos], 2.0, 220, 255, 220)
+    end
+
+    @level.lamps.each do |lamp|
+      next unless V.dist2(lamp[:pos], pos) < r.fog**2
+      next unless @level.los?(pos, lamp[:pos], 3.0)
+      c = lamp[:rgb]
+      r.draw_glow(lamp[:pos], 6.0, c[0], c[1], c[2], 170)
+      r.draw_glow(lamp[:pos], 1.6, 255, 255, 255)
+    end
 
     @pickups.each do |pk|
       next unless V.dist2(pk.pos, pos) < 90**2
@@ -842,6 +925,15 @@ class Game
     end
 
     r.flush(args.outputs)
+  end
+
+  # Pulsing green lights along the escape route while the countdown runs.
+  def beacon_lights
+    return [] unless @countdown
+    pulse = 0.75 + 0.25 * Math.sin(@play_time * 6)
+    @level.beacons.map do |p|
+      { pos: p, radius: 60, color: [0.3, 1.0, 0.45], intensity: 1.1 * pulse, pulse: pulse }
+    end
   end
 
   def render_reactor(r, cam)
@@ -894,7 +986,7 @@ class Game
     label(out, 640, 44, 'MISSILES', 16, [170, 170, 190], 0.5)
     label(out, 640, 22, s.missiles.to_s, 26, [255, 110, 90], 0.5)
     label(out, 780, 44, 'KEYS', 16, [170, 170, 190])
-    { blue: [60, 120, 255], red: [240, 60, 60] }.each_with_index do |(k, col), n|
+    KEY_COLORS.each_with_index do |(k, col), n|
       x = 780 + n * 34
       if @keys[k]
         out << { x: x, y: 10, w: 26, h: 20, r: col[0], g: col[1], b: col[2], path: :solid, primitive_marker: :sprite }
@@ -902,6 +994,7 @@ class Game
         out << { x: x, y: 10, w: 26, h: 20, r: col[0], g: col[1], b: col[2], primitive_marker: :border }
       end
     end
+    label(out, 20, 700, "LEVEL #{@level_index + 1}  #{@level.defn::TITLE.upcase}", 16, [150, 150, 170])
     label(out, 920, 44, 'SHIPS', 16, [170, 170, 190])
     label(out, 920, 22, [@lives, 0].max.to_s, 26, [255, 255, 255])
     label(out, 1250, 44, 'SCORE', 16, [170, 170, 190], 1)
@@ -952,8 +1045,7 @@ class Game
       @state = :playing
       grab_mouse(true)
     elsif kb.key_down.t
-      @state = :title
-      setup_level
+      back_to_title
     end
   end
 
@@ -963,12 +1055,32 @@ class Game
     out << { x: 0, y: 0, w: 1280, h: 720, r: won ? 0 : 40, g: 0, b: 0, a: 170, path: :solid, primitive_marker: :sprite }
     label(out, 640, 470, won ? 'MINE ESCAPED!' : 'GAME OVER', 72, won ? [120, 255, 140] : [255, 80, 60], 0.5)
     label(out, 640, 390, @end_reason.to_s, 26, [230, 230, 240], 0.5)
-    label(out, 640, 340, "Score #{@score}    Robots destroyed #{@kills}    Time #{@play_time.to_i}s", 24,
+    label(out, 640, 340, "Score #{@score}    Robots destroyed #{@total_kills}    Time #{@total_time.to_i}s", 24,
           [255, 220, 140], 0.5)
     label(out, 640, 250, 'Press ENTER to return to the title screen', 24, [200, 200, 210], 0.5)
-    if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
-      @state = :title
-      setup_level
+    back_to_title if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
+  end
+
+  def render_intermission
+    out = args.outputs.primitives
+    out << { x: 0, y: 0, w: 1280, h: 720, r: 0, g: 10, b: 20, a: 190, path: :solid, primitive_marker: :sprite }
+    label(out, 640, 560, "LEVEL #{@level_index + 1} COMPLETE", 64, [120, 255, 140], 0.5)
+    label(out, 640, 500, @level.defn::TITLE, 28, [200, 210, 230], 0.5)
+    rows = [
+      ['Robots destroyed', @kills.to_s],
+      ['Time', "#{@play_time.to_i}s"],
+      ["Escape bonus (#{@escape_time.round(1)}s left)", "+#{@escape_bonus}"],
+      ['Shield bonus', "+#{@shield_bonus}"],
+      ['Score', @score.to_s]
+    ]
+    rows.each_with_index do |(k, v), n|
+      y = 420 - n * 36
+      label(out, 620, y, k, 24, [200, 200, 210], 1)
+      label(out, 660, y, v, 24, n == rows.size - 1 ? [255, 220, 140] : [255, 255, 255])
     end
+    nxt = Levels::ALL[@level_index + 1]
+    label(out, 640, 170, "Next: level #{@level_index + 2}, #{nxt::TITLE}", 26, [255, 200, 120], 0.5)
+    label(out, 640, 120, 'Press ENTER to continue', 24, [200, 200, 210], 0.5)
+    next_level if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
   end
 end

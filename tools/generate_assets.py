@@ -184,6 +184,7 @@ def build_textures():
     write_png(os.path.join(SPRITES, "tech.png"), S, S, tech())
     write_png(os.path.join(SPRITES, "door_blue.png"), S, S, door((50, 110, 255)))
     write_png(os.path.join(SPRITES, "door_red.png"), S, S, door((230, 40, 40)))
+    write_png(os.path.join(SPRITES, "door_yellow.png"), S, S, door((240, 200, 40)))
     write_png(os.path.join(SPRITES, "grate.png"), S, S, grate())
     write_png(os.path.join(SPRITES, "glow.png"), 64, 64, glow())
     write_png(os.path.join(SPRITES, "white.png"), 8, 8, solid_white())

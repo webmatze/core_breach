@@ -44,7 +44,9 @@ module D3D
     # PORTALS flattened to [ox, oy, oz] triples at (dir * 4 + corner) * 3.
     PORTAL_OFFSETS = PORTALS.flatten
 
-    attr_reader :nx, :ny, :nz, :cell_size, :cells, :faces, :blockers
+    # version is bumped on every runtime change of open/solid cells (unseal,
+    # solidify), so caches such as GridMap know when to rebuild.
+    attr_reader :nx, :ny, :nz, :cell_size, :cells, :faces, :blockers, :version
 
     def initialize(nx, ny, nz, cell_size: 10.0, material: :default, tint: [0.7, 0.7, 0.7],
                    dir_shade: DEFAULT_DIR_SHADE)
@@ -62,6 +64,7 @@ module D3D
       @faces = Array.new(size)
       @visited = Array.new(size, 0)
       @stamp = 0
+      @version = 0
       gp = (nx + 1) * (ny + 1) * (nz + 1)
       @gp_stamp = Array.new(gp, 0)
       @gp_x = Array.new(gp)
@@ -144,12 +147,25 @@ module D3D
       n
     end
 
-    # Opens a blocker cell and rebuilds the faces.
+    # Opens a blocker cell and rebuilds the faces around it.
     def unseal(n)
       return false unless @blockers.delete(n)
       @blocker_materials.delete(n)
       @cells[n] = true
-      rebuild_faces
+      rebuild_faces_near(n)
+      @version += 1
+      true
+    end
+
+    # Turns an open cell solid at runtime (cave-ins, closing shutters) and
+    # rebuilds the faces around it. Returns false if the cell wasn't open.
+    def solidify(i, j, k)
+      return false unless in_bounds?(i, j, k)
+      n = idx(i, j, k)
+      return false unless @cells[n]
+      @cells[n] = false
+      rebuild_faces_near(n)
+      @version += 1
       true
     end
 
@@ -261,17 +277,25 @@ module D3D
         (1...@ny - 1).each do |j|
           (1...@nx - 1).each do |i|
             n = idx(i, j, k)
-            next unless @cells[n]
-            list = []
-            DIRS.each_with_index do |d, di|
-              m = idx(i + d[0], j + d[1], k + d[2])
-              next if @cells[m]
-              material = @blocker_materials[m] || @material[n]
-              list << make_face(i, j, k, di, material, n)
-            end
-            @faces[n] = list unless list.empty?
+            @faces[n] = cell_faces(i, j, k, n) if @cells[n]
           end
         end
+      end
+      self
+    end
+
+    # Recomputes the faces of cell n and its six neighbours only. Use after
+    # changing a single cell; much cheaper than rebuild_faces on large grids.
+    def rebuild_faces_near(n)
+      i, j, k = coords(n)
+      @faces[n] = @cells[n] ? cell_faces(i, j, k, n) : nil
+      DIRS.each do |d|
+        ni = i + d[0]
+        nj = j + d[1]
+        nk = k + d[2]
+        next unless in_bounds?(ni, nj, nk)
+        m = idx(ni, nj, nk)
+        @faces[m] = @cells[m] ? cell_faces(ni, nj, nk, m) : nil
       end
       self
     end
@@ -594,6 +618,18 @@ module D3D
     end
 
     private
+
+    # Wall faces of open cell (i, j, k) with index n, or nil if it has none.
+    def cell_faces(i, j, k, n)
+      list = []
+      DIRS.each_with_index do |d, di|
+        m = idx(i + d[0], j + d[1], k + d[2])
+        next if @cells[m]
+        material = @blocker_materials[m] || @material[n]
+        list << make_face(i, j, k, di, material, n)
+      end
+      list.empty? ? nil : list
+    end
 
     def each_in(i0, i1, j0, j1, k0, k1)
       (k0..k1).each do |k|

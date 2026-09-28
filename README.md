@@ -2,7 +2,12 @@
 
 A six degrees of freedom mine shooter built with [DragonRuby Game Toolkit](https://dragonruby.org), written as a tribute to the tunnel shooters of the mid-90s. The level, robots, textures and sounds are all original.
 
-Fly through the mine, find the blue and red keys, destroy the reactor, and escape before the self-destruct countdown runs out.
+Two levels:
+
+1. **The Mine:** find the blue and red keys, destroy the reactor, and escape before the self-destruct countdown runs out.
+2. **The Deep Core:** descend a huge vertical shaft, collect three keys (blue, yellow, red), destroy the core and climb out through the escape vent.
+
+Score, lives and missiles carry over between levels. On the title screen, press a level's number to start there.
 
 ## Running
 
@@ -26,6 +31,7 @@ The project uses DragonRuby Pro 7.13 through [Smaug](https://github.com/ereborst
 | Tab | Automap (mouse / arrows / A D rotate, W S / wheel zoom) |
 | I | Invert mouse |
 | Esc | Pause |
+| 1 / 2 (title screen) | Start directly at a level |
 | F1 | Show fps and triangle count |
 
 Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down, Select for the automap.
@@ -36,7 +42,7 @@ Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down,
 | --- | --- |
 | `lib/d3d/` | Vendored copy of the [d3d](https://github.com/webmatze/d3d) engine (renderer, cell grid, 6DOF pose, meshes, automap). Don't edit here |
 | `app/level.rb` | The mine: wraps a `D3D::CellGrid` and adds doors, exit, spawns and materials |
-| `app/level_data.rb` | Mission layout, pickups and robot spawns |
+| `app/levels.rb`, `app/levels/*.rb` | Level definitions in play order: layout, pickups, robot spawns, wall lamps, countdown and texts |
 | `app/meshes.rb` | Robot, reactor and pickup models (built with `D3D::FlatMesh`) |
 | `app/game.rb` | Flight, weapons, robot AI, reactor, HUD, menus |
 | `app/entities.rb` | Game object data holders |
@@ -55,7 +61,7 @@ The engine started in this game and now lives in the [d3d](https://github.com/we
 
 ## 1. The world is a grid of cubes (`D3D::CellGrid`, `lib/d3d/cell_grid.rb`)
 
-- The mine (`app/level.rb`) is a 48×16×48 grid of 10-unit cells, each either open or solid. Rooms and tunnels are "carved" out of solid rock with box ranges in `app/level_data.rb`, and pillars and boulders are filled back in.
+- The mine (`app/level.rb`) is a 48×16×48 grid of 10-unit cells, each either open or solid. Rooms and tunnels are "carved" out of solid rock with box ranges in `app/levels/mine.rb`, and pillars and boulders are filled back in.
 - `roughen` randomly raises floor cells and drops ceiling cells to make the caverns look less boxy. It uses a fixed-seed random number generator, so the level is identical every run, and it never touches cells next to doors or openings in the floor.
 - **Wall generation:** every face where an open cell touches a solid one becomes a wall quad. Each quad stores its corner `c0`, two edge vectors (`eu`, `ev`), an inward-facing normal, a texture and a precomputed tint. The tint is the room's light colour times a per-direction shade: floors brightest, ceilings darkest, which gives cheap depth cues.
 - Faces are rebuilt only when the geometry changes, i.e. when a door opens.
