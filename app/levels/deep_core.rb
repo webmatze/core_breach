@@ -19,7 +19,7 @@ module Levels
       respawn:        'Ship restored at the arrival dock.',
       exit_locked:    'The escape vent stays sealed while the core is intact.',
       objective_done: 'CORE DESTROYED! Escape vent open: ceiling, far right corner from the red door. Follow the green lights!',
-      blue_key:       'BLUE key acquired! The blue door is halfway down the shaft, east side.',
+      blue_key:       'BLUE key acquired! The blue door is halfway down the shaft, east side. The power is out beyond it: use flares (G).',
       yellow_key:     'YELLOW key acquired! The yellow door is at the bottom of the shaft, south side.',
       red_key:        'RED key acquired! The core lies behind the red door, bottom of the shaft, north side.'
     }
@@ -29,7 +29,7 @@ module Levels
     AMBER        = [255, 170, 80]
     COLD         = [120, 180, 255]
     ROCK_LIGHT   = [0.78, 0.7, 0.6]
-    WING_LIGHT   = [0.7, 0.8, 1.0]
+    WING_LIGHT   = [0.05, 0.05, 0.07]    # blacked out: headlight and flares only
     MAGMA_LIGHT  = [1.2, 0.58, 0.36]
     CORE_LIGHT   = [1.05, 0.9, 0.8]
 
@@ -52,9 +52,10 @@ module Levels
        [26, 29, 6, 6, 18, 19],
        [18, 19, 17, 18, 27, 29]].each { |b| l.fill(*b) }
 
-      # wall lamps down the shaft, alternating sides and colours
+      # wall lamps down the shaft, alternating sides and colours. Lights shine
+      # through rock, so keep lamps more than 65 units from the dark wing (x >= 33).
       [[18.15, 33.5, 21.5, AMBER], [29.85, 30.5, 25.5, COLD], [23.5, 27.5, 18.15, AMBER],
-       [18.15, 19.5, 25.5, COLD], [29.85, 15.5, 20.5, AMBER], [24.5, 10.5, 29.85, COLD],
+       [18.15, 19.5, 25.5, COLD], [18.15, 15.5, 20.5, AMBER], [24.5, 10.5, 29.85, COLD],
        [18.15, 6.5, 21.5, AMBER], [29.85, 4.5, 27.5, AMBER]].each { |i, j, k, c| l.lamp(i, j, k, c) }
 
       # --- west gallery and blue key room (high) ------------------------------
@@ -62,7 +63,7 @@ module Levels
       l.carve 3, 10, 25, 31, 17, 28, :rock, ROCK_LIGHT
       l.fill 6, 7, 25, 27, 21, 23                                # rock plinth
 
-      # --- blackout wing behind the blue door (middle, east) -------------------
+      # --- blackout wing behind the blue door (middle, east): power is out -----
       l.carve 30, 32, 16, 16, 23, 23, :metal, METAL_LIGHT
       l.carve 33, 44, 13, 19, 15, 31, :tech, WING_LIGHT
       l.fill 36, 37, 13, 19, 15, 26                              # maze walls

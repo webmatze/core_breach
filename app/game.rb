@@ -11,6 +11,15 @@ class Game
   MISSILE_DAMAGE  = 55
   MISSILE_SPLASH  = 16.0
   PICKUP_RADIUS   = 5.0
+  FLARE_SPEED     = 75.0
+  FLARE_COST      = 2.0
+  FLARE_LIFE      = 20.0
+  FLARE_COLOR     = [255, 215, 150]
+  MAX_FLARES      = 6
+  # Headlight in normal rooms vs. rooms whose light level is below DARK_LEVEL.
+  HEADLIGHT       = [0.7, 60.0]
+  DARK_HEADLIGHT  = [0.05, 16.0]
+  DARK_LEVEL      = 0.2
   TITLE           = 'CORE BREACH'
   MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120] }
   KEY_COLORS      = { blue: [60, 120, 255], yellow: [240, 200, 40], red: [240, 60, 60] }
@@ -61,6 +70,7 @@ class Game
     @projectiles = []
     @particles = []
     @lights = []
+    @flares = []
     @messages = []
     @countdown = nil
     @shake = 0
@@ -220,6 +230,7 @@ class Game
       ['Q E', 'roll'],
       ['Left click / Space', 'lasers'],
       ['Right click / Ctrl', 'concussion missile'],
+      ['G', 'flare (lights dark rooms)'],
       ['Tab', 'automap'],
       ['I', 'invert mouse'],
       ['Esc', 'pause']
@@ -233,7 +244,7 @@ class Game
       out << { x: 640, y: 110, text: 'Press ENTER or click to launch', size_px: 30, anchor_x: 0.5,
                r: 255, g: 255, b: 255, primitive_marker: :label }
     end
-    out << { x: 640, y: 50, text: 'Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B slide up/down',
+    out << { x: 640, y: 50, text: 'Gamepad: sticks to fly, triggers to fire, Y flare, bumpers to roll, A/B slide up/down',
              size_px: 18, anchor_x: 0.5, r: 150, g: 150, b: 160, primitive_marker: :label }
 
     out << { x: 640, y: 80, text: "Practice: press 1-#{Levels::ALL.size} to start at a level",
@@ -258,6 +269,7 @@ class Game
     update_robots
     update_reactor
     update_projectiles
+    update_flares
     update_particles
     update_lights
     update_countdown
@@ -336,6 +348,43 @@ class Game
     fire_secondary = kb.control || ms.button_right || pad.l2
     fire_laser if fire_primary && s.fire_cooldown <= 0
     fire_missile if fire_secondary && s.missile_cooldown <= 0
+    s.flare_cooldown -= DT
+    fire_flare if (kb.g || pad.y) && s.flare_cooldown <= 0
+  end
+
+  def fire_flare
+    s = @ship
+    s.flare_cooldown = 1.0
+    if s.energy < FLARE_COST
+      message('Not enough energy for a flare!', 1)
+      return
+    end
+    s.energy -= FLARE_COST
+    origin = V.madd(V.madd(s.pos, s.up, -1.0), s.fwd, 2.0)
+    vel = V.madd(V.scale(s.fwd, FLARE_SPEED), s.vel, 0.5)
+    @projectiles << Projectile.new(origin, vel, :player, 0, :flare, FLARE_COLOR, 1.4, 4.0)
+    play :flare, 0.4
+  end
+
+  # A flare that hits a wall stays there, just in front of the surface.
+  def stick_flare(pos)
+    @flares.shift while @flares.size >= MAX_FLARES
+    @flares << Flare.new(pos, FLARE_LIFE)
+    sparks(pos, FLARE_COLOR, 6)
+  end
+
+  def update_flares
+    @flares.each { |f| f.life -= DT }
+    @flares.reject! { |f| f.life <= 0 }
+  end
+
+  # Flickering light of each burning flare; fades out over its last 3 seconds.
+  def flare_lights
+    @flares.map do |f|
+      flicker = 0.85 + 0.1 * Math.sin(@play_time * 23 + f.phase) + 0.05 * rand
+      fade = [f.life / 3.0, 1.0].min
+      { pos: f.pos, radius: 45, color: [1.0, 0.85, 0.6], intensity: 1.1 * flicker * fade, glow: flicker * fade }
+    end
   end
 
   def fire_laser
@@ -670,12 +719,18 @@ class Game
       steps = 2
       dead = false
       steps.times do
+        prev = pr.pos
         pr.pos = V.madd(pr.pos, pr.vel, DT / steps)
         if @level.solid_at?(pr.pos)
-          impact(pr, nil)
+          if pr.kind == :flare
+            stick_flare(prev)
+          else
+            impact(pr, nil)
+          end
           dead = true
           break
         end
+        next if pr.kind == :flare # flares fly past robots
         if pr.owner == :player
           target = @robots.find { |rb| V.dist2(rb.pos, pr.pos) < (rb.radius + pr.size * 0.5)**2 }
           if target
@@ -852,12 +907,14 @@ class Game
     @projectiles.each do |pr|
       lights << { pos: pr.pos, radius: 12, color: pr.color.map { |c| c / 255.0 }, intensity: 0.5 }
     end
+    flare_lights.each { |f| lights << f if V.dist2(f[:pos], pos) < 110**2 }
     beacon_lights.each { |b| lights << b if V.dist2(b[:pos], pos) < 110**2 }
     # lamps only matter when their light can reach walls near the camera
     @level.lamps.each { |lamp| lights << lamp if V.dist2(lamp[:pos], pos) < 110**2 }
     lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(8)
 
     r = @renderer
+    adapt_headlight(r, pos)
     r.begin_frame(View.new(pos, right, up, fwd), lights: lights, ambient_boost: boost)
     r.draw_grid(@level.grid)
 
@@ -866,12 +923,20 @@ class Game
       next unless @level.los?(pos, rb.pos, 3.0)
       rgt, u = V.basis_from_forward(rb.fwd)
       flash = rb.hit_flash > 0 ? 0.7 : 0.0
-      r.draw_mesh(MESHES[rb.kind], rb.pos, rgt, u, rb.fwd, 1.0, @level.tint_at(rb.pos), flash)
+      light = light_near(rb.pos, lights)
+      r.draw_mesh(MESHES[rb.kind], rb.pos, rgt, u, rb.fwd, 1.0, light, flash, ambient: mesh_ambient(light))
       eye = V.madd(rb.pos, rb.fwd, rb.kind == :brute ? 2.2 : 2.0)
       r.draw_glow(eye, 1.6, 255, 80, 60, 200)
     end
 
     render_reactor(r, pos)
+
+    flare_lights.each do |f|
+      next unless V.dist2(f[:pos], pos) < r.fog**2
+      next unless @level.los?(pos, f[:pos], 3.0)
+      r.draw_glow(f[:pos], 7.0 * f[:glow], 255, 200, 120, 210)
+      r.draw_glow(f[:pos], 1.8, 255, 250, 230)
+    end
 
     # beacon glows show beyond the fog so they can be spotted across big rooms
     beacon_lights.each do |b|
@@ -900,7 +965,8 @@ class Game
       rgt, u = V.basis_from_forward(fwd2)
       p = V.add(pk.pos, [0, Math.sin(pk.phase * 2) * 0.6, 0])
       mesh = MESHES[pk.kind]
-      r.draw_mesh(mesh, p, rgt, u, fwd2, 1.0, [1.2, 1.2, 1.2])
+      light = light_near(p, lights)
+      r.draw_mesh(mesh, p, rgt, u, fwd2, 1.0, light.map { |c| c + 0.4 }, 0.0, ambient: mesh_ambient(light))
       col = mesh.tris[0].color
       r.draw_glow(p, 5.5, col[0], col[1], col[2], 120)
     end
@@ -925,6 +991,37 @@ class Game
     end
 
     r.flush(args.outputs)
+  end
+
+  # Dims the headlight smoothly while the camera is inside a dark room, so
+  # flares are needed there even close to the walls.
+  def adapt_headlight(r, pos)
+    dark = @level.tint_at(pos).max < DARK_LEVEL ? 1.0 : 0.0
+    @darkness = (@darkness || 0.0) + (dark - (@darkness || 0.0)) * 0.08
+    r.headlight = HEADLIGHT[0] + (DARK_HEADLIGHT[0] - HEADLIGHT[0]) * @darkness
+    r.headlight_range = HEADLIGHT[1] + (DARK_HEADLIGHT[1] - HEADLIGHT[1]) * @darkness
+  end
+
+  # Light reaching an object: its room's light plus nearby flares, lamps, shots
+  # and explosions (0..~1.5 per channel).
+  def light_near(p, lights)
+    l = @level.tint_at(p).dup
+    lights.each do |lt|
+      rad = lt[:radius]
+      d2 = V.dist2(lt[:pos], p)
+      next if d2 >= rad * rad
+      k = (1.0 - Math.sqrt(d2) / rad) * lt[:intensity]
+      c = lt[:color]
+      l[0] += c[0] * k
+      l[1] += c[1] * k
+      l[2] += c[2] * k
+    end
+    l
+  end
+
+  # Objects keep the old minimum brightness in lit rooms but fade into the dark.
+  def mesh_ambient(light)
+    clamp(light.max, 0.03, 0.6)
   end
 
   # Pulsing green lights along the escape route while the countdown runs.

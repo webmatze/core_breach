@@ -3,7 +3,7 @@
 class Ship
   RADIUS = 2.4
 
-  attr_accessor :vel, :shields, :energy, :missiles, :fire_cooldown, :missile_cooldown,
+  attr_accessor :vel, :shields, :energy, :missiles, :fire_cooldown, :missile_cooldown, :flare_cooldown,
                 :laser_side, :alive, :dead_timer, :hit_flash, :spin
   attr_reader :pose
 
@@ -20,6 +20,7 @@ class Ship
     @spin = [0.0, 0.0, 0.0] # pitch, yaw, roll velocity
     @fire_cooldown = 0
     @missile_cooldown = 0
+    @flare_cooldown = 0
     @laser_side = 1
     @alive = true
     @dead_timer = 0
@@ -134,5 +135,16 @@ class Particle
     @size = size
     @grow = grow
     @color = color
+  end
+end
+
+# A flare stuck to a wall: a flickering light that burns out.
+class Flare
+  attr_accessor :pos, :life, :phase
+
+  def initialize(pos, life)
+    @pos = pos
+    @life = life
+    @phase = rand * 10
   end
 end

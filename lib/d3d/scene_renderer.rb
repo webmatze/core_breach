@@ -19,6 +19,17 @@ module D3D
     attr_reader :width, :height, :focal, :near, :fog, :tan_x, :tan_y,
                 :triangle_count, :last_visible, :camera_position
     attr_accessor :materials
+    # Strength (0..1) and reach (world units) of the camera headlight on walls.
+    # Can be changed between frames, e.g. dimmed inside dark rooms.
+    attr_reader :headlight, :headlight_range
+
+    def headlight=(v)
+      @headlight = v.to_f
+    end
+
+    def headlight_range=(v)
+      @headlight_range = v.to_f
+    end
 
     def initialize(width: 1280, height: 720, focal: nil, fov: 92.0, near: 0.4, fog: 140.0,
                    headlight_range: 60.0, headlight: 0.7, ambient_scale: 1.05,
@@ -427,7 +438,9 @@ module D3D
 
     # Draws a FlatMesh at pos with the given orientation basis. light is the
     # [r,g,b] ambient (0..~1.2) around the object. flash (0..1) blends to white.
-    def draw_mesh(mesh, pos, right, up, fwd, scale = 1.0, light = [1.0, 1.0, 1.0], flash = 0.0)
+    # ambient is the minimum brightness of non-emissive triangles (0.6 keeps
+    # objects readable in dim rooms; near 0 lets them vanish in the dark).
+    def draw_mesh(mesh, pos, right, up, fwd, scale = 1.0, light = [1.0, 1.0, 1.0], flash = 0.0, ambient: 0.6)
       o = to_cam(pos[0], pos[1], pos[2])
       return if o[2] < -mesh.radius * scale
       rc = dir_to_cam(right[0] * scale, right[1] * scale, right[2] * scale)
@@ -463,9 +476,9 @@ module D3D
         s = (0.35 + 0.75 * lambert) * fog
         col = t.color
         emissive = t.emissive
-        r = col[0] * (emissive ? 1.0 : s * (light[0] * 0.5 + 0.6))
-        g = col[1] * (emissive ? 1.0 : s * (light[1] * 0.5 + 0.6))
-        bb = col[2] * (emissive ? 1.0 : s * (light[2] * 0.5 + 0.6))
+        r = col[0] * (emissive ? 1.0 : s * (light[0] * 0.5 + ambient))
+        g = col[1] * (emissive ? 1.0 : s * (light[1] * 0.5 + ambient))
+        bb = col[2] * (emissive ? 1.0 : s * (light[2] * 0.5 + ambient))
         if flash > 0
           r += (255 - r) * flash
           g += (255 - g) * flash

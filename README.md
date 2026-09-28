@@ -5,7 +5,7 @@ A six degrees of freedom mine shooter built with [DragonRuby Game Toolkit](https
 Two levels:
 
 1. **The Mine:** find the blue and red keys, destroy the reactor, and escape before the self-destruct countdown runs out.
-2. **The Deep Core:** descend a huge vertical shaft, collect three keys (blue, yellow, red), destroy the core and climb out through the escape vent.
+2. **The Deep Core:** descend a huge vertical shaft, collect three keys (blue, yellow, red), light your way through a blacked-out wing with flares, destroy the core and climb out through the escape vent.
 
 Score, lives and missiles carry over between levels. On the title screen, press a level's number to start there.
 
@@ -28,13 +28,14 @@ The project uses DragonRuby Pro 7.13 through [Smaug](https://github.com/ereborst
 | Q / E | Roll |
 | Left click / Space | Lasers |
 | Right click / Ctrl | Concussion missile |
+| G | Flare: sticks to walls and lights dark rooms for 20 s (2 energy) |
 | Tab | Automap (mouse / arrows / A D rotate, W S / wheel zoom) |
 | I | Invert mouse |
 | Esc | Pause |
 | 1 / 2 (title screen) | Start directly at a level |
 | F1 | Show fps and triangle count |
 
-Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B to slide up/down, Select for the automap.
+Gamepad: sticks to fly, triggers to fire, Y for a flare, bumpers to roll, A/B to slide up/down, Select for the automap.
 
 ## Project layout
 
