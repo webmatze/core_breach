@@ -20,6 +20,7 @@ module Levels
       respawn:        'Ship restored at the arrival dock.',
       exit_locked:    'The escape vent stays sealed while the Warden lives.',
       objective_done: 'WARDEN DESTROYED! Escape vent open: ceiling, far right corner from the red door. Follow the green lights!',
+      collapse:       'The tunnel behind you is caving in! The vent is the only way out!',
       blue_key:       'BLUE key acquired! The blue door is halfway down the shaft, east side. The power is out beyond it: use flares (G).',
       yellow_key:     'YELLOW key acquired! The yellow door is at the bottom of the shaft, south side.',
       red_key:        'RED key acquired! The Warden waits behind the red door, bottom of the shaft, north side.'
@@ -87,6 +88,15 @@ module Levels
       l.carve 31, 36, 36, 36, 42, 42, :metal, METAL_LIGHT
       l.mark_exit 35, 36, 42
       l.mark_exit 36, 36, 42
+
+      # --- the collapse: once the Warden falls, the red door tunnel caves in
+      # behind you, then rocks come down from the chamber ceiling (away from
+      # the vent at (31, 12, 42)). Only while the ship is in the chamber/vent.
+      l.set_escape_zone 15, 36, 1, 36, 34, 45
+      [[23, 4, 30, 2.0], [23, 4, 31, 2.8], [23, 4, 32, 3.6], [23, 4, 33, 4.4],
+       [17, 12, 36, 7], [26, 12, 35, 11], [20, 12, 44, 15], [16, 12, 40, 19],
+       [22, 12, 38, 23], [28, 12, 37, 27], [18, 11, 36, 31], [24, 12, 41, 35],
+       [16, 11, 44, 39], [27, 11, 35, 43]].each { |i, j, k, t| l.collapse(i, j, k, t) }
       l.beacon 31.5, 12.8, 42.5                                # just below the vent opening
       l.beacon 31.5, 24.5, 42.5                                # halfway up
       l.beacon 31.5, 35.5, 42.5                                # top of the climb

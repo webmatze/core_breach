@@ -5,7 +5,7 @@ A six degrees of freedom mine shooter built with [DragonRuby Game Toolkit](https
 Two levels:
 
 1. **The Mine:** find the blue and red keys, destroy the reactor, and escape before the self-destruct countdown runs out.
-2. **The Deep Core:** descend a huge vertical shaft, collect three keys (blue, yellow, red), light your way through a blacked-out wing with flares, get past armoured wall turrets (lasers barely scratch them, use missiles) and splitters that break into two fast mini-hunters. Destroy the three shield pylons, defeat the Warden guarding the core and climb out through the escape vent.
+2. **The Deep Core:** descend a huge vertical shaft, collect three keys (blue, yellow, red), light your way through a blacked-out wing with flares, get past armoured wall turrets (lasers barely scratch them, use missiles) and splitters that break into two fast mini-hunters. Destroy the three shield pylons, defeat the Warden guarding the core and climb out through the escape vent while the tunnel behind you caves in.
 
 Score, lives and missiles carry over between levels. On the title screen, press a level's number to start there.
 

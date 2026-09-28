@@ -316,6 +316,20 @@ def pylon_down():
     return out
 
 
+def rumble():
+    """Deep rolling rumble with rocks crashing down."""
+    rnd = random.Random(44)
+    n = int(RATE * 1.6)
+    out, low, mid = [], 0.0, 0.0
+    for i in range(n):
+        t = i / RATE
+        low += 0.02 * (rnd.uniform(-1, 1) - low)
+        mid += 0.2 * (rnd.uniform(-1, 1) - mid)
+        crash = 1.0 if rnd.random() < 0.004 else 0.0
+        out.append((5.0 * low + 0.6 * mid * max(0.0, 1 - t / 0.4) + 0.5 * crash) * envelope(i, n, 0.01, 1.3))
+    return out
+
+
 def alarm():
     n = int(RATE * 1.0)
     out, phase = [], 0.0
@@ -339,6 +353,7 @@ def build_sounds():
     write_wav("flare.wav", flare_sound())
     write_wav("shield_hit.wav", shield_hit())
     write_wav("pylon_down.wav", pylon_down())
+    write_wav("rumble.wav", rumble())
 
 
 if __name__ == "__main__":

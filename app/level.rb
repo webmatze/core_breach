@@ -18,7 +18,7 @@ class Level
   DOOR_MATERIALS = { blue: :door_blue, yellow: :door_yellow, red: :door_red, exit: :door_exit }
 
   attr_reader :defn, :grid, :spawns, :player_start, :exit_cells, :reactor_pos, :lamps, :beacons,
-              :pylons, :boss_pos
+              :pylons, :boss_pos, :collapses, :escape_zone
 
   # defn: a level definition module from Levels::ALL
   def initialize(defn)
@@ -30,6 +30,8 @@ class Level
     @lamps = []
     @beacons = []
     @pylons = []
+    @collapses = []
+    @escape_zone = nil
     defn.build(self)
     @grid.rebuild_faces
   end
@@ -72,6 +74,32 @@ class Level
     puts "Level #{@defn::TITLE}: pylon at #{[i, j, k]} is not in an open cell" unless @grid.open?(i, j, k)
     puts "Level #{@defn::TITLE}: pylon at #{[i, j, k]} has no floor" if @grid.open?(i, j - 1, k)
     @pylons << [(i + 0.5) * CS, j * CS + Pylon::HALF_HEIGHT + 0.5, (k + 0.5) * CS]
+  end
+
+  # Cell (i, j, k) caves in `time` seconds after the countdown starts.
+  def collapse(i, j, k, time)
+    @collapses << [i, j, k, time.to_f]
+  end
+
+  # Collapses only happen while the ship is inside this box of cells, so the
+  # player can never be locked out of the escape route.
+  def set_escape_zone(i0, i1, j0, j1, k0, k1)
+    @escape_zone = [i0, i1, j0, j1, k0, k1]
+  end
+
+  def in_escape_zone?(p)
+    return true unless @escape_zone
+    i0, i1, j0, j1, k0, k1 = @escape_zone
+    i, j, k = @grid.cell_of(p)
+    i.between?(i0, i1) && j.between?(j0, j1) && k.between?(k0, k1)
+  end
+
+  # True if a sphere overlaps cell (i, j, k).
+  def sphere_in_cell?(p, r, i, j, k)
+    cx = clamp(p[0], i * CS, (i + 1) * CS)
+    cy = clamp(p[1], j * CS, (j + 1) * CS)
+    cz = clamp(p[2], k * CS, (k + 1) * CS)
+    V.dist2(p, [cx, cy, cz]) < r * r
   end
 
   def set_player_start(pos)

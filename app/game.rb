@@ -74,6 +74,7 @@ class Game
     @flares = []
     @messages = []
     @countdown = nil
+    @pending_collapses = nil
     @shake = 0
     @damage_flash = 0
     @pickup_flash = 0
@@ -747,12 +748,51 @@ class Game
   def objective_complete(pos, points)
     @score += points
     @countdown = @level.defn::COUNTDOWN
+    @pending_collapses = @level.collapses.dup
+    @collapse_warned = false
     explode(pos, 5.0, [255, 200, 90])
     6.times { explode(V.madd(pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
     @shake = 2.0
     exit_door = @level.door_idx(:exit)
     @level.open_door(exit_door) if exit_door
     message level_text(:objective_done), 8
+  end
+
+  # Caves in scheduled cells once their time has come, but never the cell the
+  # ship is in, and only while the ship is inside the level's escape zone.
+  def update_collapses
+    return if @pending_collapses.nil? || @pending_collapses.empty?
+    return unless @ship.alive && @level.in_escape_zone?(@ship.pos)
+    elapsed = @level.defn::COUNTDOWN - @countdown
+    @pending_collapses.reject! do |i, j, k, time|
+      next false if time > elapsed
+      next false if @level.sphere_in_cell?(@ship.pos, Ship::RADIUS + 0.5, i, j, k)
+      collapse_cell(i, j, k)
+      true
+    end
+  end
+
+  def collapse_cell(i, j, k)
+    return unless @level.grid.solidify(i, j, k)
+    center = @level.grid.cell_center(i, j, k)
+    inside = ->(p, r) { @level.sphere_in_cell?(p, r, i, j, k) }
+    @robots.dup.each { |rb| damage_robot(rb, 10_000) if inside.call(rb.pos, rb.radius * 0.5) }
+    @pickups.reject! { |pk| inside.call(pk.pos, 0.5) }
+    @flares.reject! { |f| inside.call(f.pos, 0.5) }
+    14.times do
+      vel = V.scale(V.random_unit, 8 + rand * 14)
+      @particles << Particle.new(V.madd(center, V.random_unit, 4.0), vel, 0.6 + rand * 0.5, 1.4, 2.5, [150, 110, 80])
+    end
+    8.times do
+      @particles << Particle.new(V.madd(center, V.random_unit, 5.0), V.scale(V.random_unit, 3), 1.6, 4.0, 6.0, [70, 65, 60])
+    end
+    add_light(center, 30, [1.0, 0.6, 0.3], 0.8, 0.4)
+    d = V.dist(center, @ship.pos)
+    @shake = [@shake, 1.2 * (1 - d / 120.0)].max if d < 120
+    play :rumble, 0.9, center
+    return if @collapse_warned
+    @collapse_warned = true
+    message level_text(:collapse), 5 if level_text(:collapse)
   end
 
   # ================================================================= boss
@@ -884,6 +924,7 @@ class Game
     return unless @countdown
     before = @countdown
     @countdown -= DT
+    update_collapses
     @shake = [@shake, 0.25 + (1.0 - @countdown / @level.defn::COUNTDOWN) * 0.6].max
     play(:alarm, 0.35) if before.floor != @countdown.floor && @countdown.floor.even?
     if rand < 0.05 && @ship.alive
