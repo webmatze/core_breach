@@ -44,7 +44,7 @@ module D3D
                                  cam_pos, near, lit, fogs)
         end
 
-        triangles.sort_by { |t| -t[:z_depth] }
+        DepthSort.triangles(triangles)
       end
 
       # Takes the same light:/fog: options as render.
@@ -138,6 +138,21 @@ module D3D
         hw = HALF_WIDTH
         hh = HALF_HEIGHT
 
+        # With the optional extension loaded the face loop below runs in C
+        # (D3D::Ext.render_voxels mirrors it exactly). Its geometry handle
+        # lives in the render cache; colours, paths and source coordinates
+        # are passed as the cache's Ruby arrays so they keep their values.
+        if Native.enabled?
+          cache[30] ||= Ext.pack_mesh(ux, uy, uz, fi0, fi1, fi2, fvx, fvy, fvz, fnx, fny, fnz)
+          Ext.render_voxels(triangles, cache[30], mvp,
+                            [fr, fg, fb, fa, fpath, fsx0, fsy0, fsx1, fsy1, fsx2, fsy2], [
+                              px, py, pz, near, fog_far, hw, hh, margin,
+                              lit ? true : false, l0, l1, l2, l3,
+                              fogs ? true : false, fog_near, fog_r, fog_g, fog_b, fog_inv
+                            ])
+          return DepthSort.triangles(triangles)
+        end
+
         fi = 0
         while fi < face_count
           nx = fnx[fi]
@@ -199,7 +214,7 @@ module D3D
           g = fg[fi]
           b = fb[fi]
           if shaded
-            # Same arithmetic as shade, without the [r, g, b] Array
+            # Flat Lambert light and distance fog, inline (no [r, g, b] Array)
             if lit
               d = nx * l0 + ny * l1 + nz * l2
               k = l3 + (1.0 - l3) * (d > 0 ? d : 0.0)
@@ -309,7 +324,7 @@ module D3D
           fi += 1
         end
 
-        triangles.sort_by { |t| -t[:z_depth] }
+        DepthSort.triangles(triangles)
       end
 
       # Builds the flat render cache for a voxel mesh Hash: deduplicated
@@ -344,6 +359,7 @@ module D3D
                  Array.new(count, -1)]
         20.times { cache << [] }
         cache << 0
+        cache << nil # native handle (D3D::Ext.pack_mesh), built on first use
 
         ts = VOXEL_TEX_SIZE
         faces.each do |face|
@@ -460,7 +476,32 @@ module D3D
         end
       end
 
+      # Pixel size [w, h] of a model's texture: model.texture_size (Integer
+      # or [w, h]) or, in DragonRuby, the image size (cached per path). nil
+      # when unknown (e.g. CRuby without texture_size): uvs are then emitted
+      # unscaled.
+      def texture_size_of(model)
+        size = model.texture_size
+        return size.is_a?(Array) ? size : [size, size] if size
+
+        path = model.texture
+        return nil unless path
+
+        sizes = (@texture_sizes ||= {})
+        return sizes[path] if sizes.key?(path)
+
+        sizes[path] = detect_texture_size(path)
+      end
+
       private
+
+      def detect_texture_size(path)
+        return nil unless $gtk
+
+        $gtk.calcspritebox(path)
+      rescue StandardError
+        nil
+      end
 
       # [lx, ly, lz, ambient] with a normalized direction, or nil.
       def light_setup(light)
@@ -479,28 +520,6 @@ module D3D
         far = fog[:far].to_f
         color = fog[:color] || [0, 0, 0]
         [near, far, color[0], color[1], color[2], 1.0 / (far - near)]
-      end
-
-      # Applies flat lighting (unit world normal) and distance fog to a base
-      # colour. Returns [r, g, b].
-      def shade(r, g, b, nx, ny, nz, depth, lit, fogs)
-        if lit
-          d = nx * lit[0] + ny * lit[1] + nz * lit[2]
-          k = lit[3] + (1.0 - lit[3]) * (d > 0 ? d : 0.0)
-          r *= k
-          g *= k
-          b *= k
-        end
-        if fogs
-          f = (depth - fogs[0]) * fogs[5]
-          if f > 0
-            f = 1.0 if f > 1.0
-            r += (fogs[2] - r) * f
-            g += (fogs[3] - g) * f
-            b += (fogs[4] - b) * f
-          end
-        end
-        [r, g, b]
       end
 
       # Inverse of the upper 3x3 of a row-major 4x4 matrix as 9 row-major
@@ -553,6 +572,11 @@ module D3D
         f_nz = cull[8]
         uvs = mesh.uvs
         texture = model.texture
+        if texture
+          tex_size = texture_size_of(model)
+          tex_w = tex_size && tex_size[0]
+          tex_h = tex_size && tex_size[1]
+        end
         color = model.color
         color_r = color[:r]
         color_g = color[:g]
@@ -571,6 +595,52 @@ module D3D
         cx = inv[0] * tx + inv[1] * ty + inv[2] * tz
         cy = inv[3] * tx + inv[4] * ty + inv[5] * tz
         cz = inv[6] * tx + inv[7] * ty + inv[8] * tz
+
+        # Lighting needs n_world . L with n_world = inv^T n / |inv^T n|. Since
+        # (inv^T n) . L = n . (inv L), the light goes into model space once
+        # (lmx, lmy, lmz). |inv^T n|^2 = n . (inv inv^T) n; with a uniform
+        # scale inv inv^T is c * I and, as face normals are unit length (or
+        # zero), the length is sqrt(c) for every face, so no per-face sqrt.
+        if lit
+          lx = lit[0]
+          ly = lit[1]
+          lz = lit[2]
+          ambient = lit[3]
+          diffuse = 1.0 - ambient
+          lmx = inv[0] * lx + inv[1] * ly + inv[2] * lz
+          lmy = inv[3] * lx + inv[4] * ly + inv[5] * lz
+          lmz = inv[6] * lx + inv[7] * ly + inv[8] * lz
+          g00 = inv[0] * inv[0] + inv[1] * inv[1] + inv[2] * inv[2]
+          g11 = inv[3] * inv[3] + inv[4] * inv[4] + inv[5] * inv[5]
+          g22 = inv[6] * inv[6] + inv[7] * inv[7] + inv[8] * inv[8]
+          g01 = inv[0] * inv[3] + inv[1] * inv[4] + inv[2] * inv[5]
+          g02 = inv[0] * inv[6] + inv[1] * inv[7] + inv[2] * inv[8]
+          g12 = inv[3] * inv[6] + inv[4] * inv[7] + inv[5] * inv[8]
+          tol = g00 * 1e-9
+          if (g00 - g11).abs <= tol && (g00 - g22).abs <= tol &&
+             g01.abs <= tol && g02.abs <= tol && g12.abs <= tol
+            light_scale = 1.0 / Math.sqrt(g00)
+          end
+        end
+        if fogs
+          fog_near = fogs[0]
+          fog_r = fogs[2]
+          fog_g = fogs[3]
+          fog_b = fogs[4]
+          fog_inv = fogs[5]
+        end
+
+        # The loop below runs in C when the optional extension is loaded
+        # (D3D::Ext.render_model mirrors it exactly, textures included).
+        if Native.enabled?
+          Ext.render_model(triangles, mesh.native_data, mvp, inv, [
+            cx, cy, cz, near, fog_far, HALF_WIDTH, HALF_HEIGHT, NDC_MARGIN,
+            lit ? true : false, lmx, lmy, lmz, ambient, diffuse, light_scale,
+            fogs ? true : false, fog_near, fog_r, fog_g, fog_b, fog_inv,
+            color_r, color_g, color_b, color_a
+          ], texture, uvs, tex_size)
+          return
+        end
 
         # Vertices are transformed lazily, only when a front face uses them
         # (about half of a closed mesh's vertices belong only to back faces),
@@ -706,26 +776,62 @@ module D3D
               uv2 = uvs[uv2_idx]
             end
           end
+          # Texture pixels from the 0..1 uvs (unscaled when the size is unknown)
+          if uv0
+            if tex_w
+              su0 = uv0[0] * tex_w
+              sv0 = uv0[1] * tex_h
+              su1 = uv1[0] * tex_w
+              sv1 = uv1[1] * tex_h
+              su2 = uv2[0] * tex_w
+              sv2 = uv2[1] * tex_h
+            else
+              su0 = uv0[0]
+              sv0 = uv0[1]
+              su1 = uv1[0]
+              sv1 = uv1[1]
+              su2 = uv2[0]
+              sv2 = uv2[1]
+            end
+          end
 
           r = color_r
           g = color_g
           b = color_b
-          if lit || fogs
-            # World normal = inverse transpose of the model matrix * normal
-            wx = inv[0] * nx + inv[3] * ny + inv[6] * nz
-            wy = inv[1] * nx + inv[4] * ny + inv[7] * nz
-            wz = inv[2] * nx + inv[5] * ny + inv[8] * nz
-            wl = Math.sqrt(wx * wx + wy * wy + wz * wz)
-            wl = 1.0 if wl == 0
-            r, g, b = shade(r, g, b, wx / wl, wy / wl, wz / wl, (w0 + w1 + w2) * 0.333333, lit, fogs)
+          # Flat Lambert light and distance fog, inline (no [r, g, b] Array)
+          if lit
+            d = nx * lmx + ny * lmy + nz * lmz
+            if light_scale
+              d *= light_scale
+            else
+              # Non-uniform scale: world normal length per face
+              wx = inv[0] * nx + inv[3] * ny + inv[6] * nz
+              wy = inv[1] * nx + inv[4] * ny + inv[7] * nz
+              wz = inv[2] * nx + inv[5] * ny + inv[8] * nz
+              wl = Math.sqrt(wx * wx + wy * wy + wz * wz)
+              d /= wl if wl > 0
+            end
+            k = ambient + diffuse * (d > 0 ? d : 0.0)
+            r *= k
+            g *= k
+            b *= k
+          end
+          if fogs
+            f = ((w0 + w1 + w2) * 0.333333 - fog_near) * fog_inv
+            if f > 0
+              f = 1.0 if f > 1.0
+              r += (fog_r - r) * f
+              g += (fog_g - g) * f
+              b += (fog_b - b) * f
+            end
           end
 
           # Triangles crossing the near plane are clipped instead of dropped
           if w0 < near || w1 < near || w2 < near
             emit_clipped(triangles, [
-              [xs[i0], ys[i0], zs[i0], w0, uv0 ? uv0[0] : 0, uv0 ? uv0[1] : 0],
-              [xs[i1], ys[i1], zs[i1], w1, uv1 ? uv1[0] : 0, uv1 ? uv1[1] : 0],
-              [xs[i2], ys[i2], zs[i2], w2, uv2 ? uv2[0] : 0, uv2 ? uv2[1] : 0]
+              [xs[i0], ys[i0], zs[i0], w0, uv0 ? su0 : 0, uv0 ? sv0 : 0],
+              [xs[i1], ys[i1], zs[i1], w1, uv0 ? su1 : 0, uv0 ? sv1 : 0],
+              [xs[i2], ys[i2], zs[i2], w2, uv0 ? su2 : 0, uv0 ? sv2 : 0]
             ], near, r, g, b, color_a, uv0 ? texture : nil, !uv0)
             next
           end
@@ -750,12 +856,12 @@ module D3D
           # render_voxel_world); one hash literal with all keys.
           if uv0
             path = texture
-            sx0 = uv0[0]
-            sy0 = uv0[1]
-            sx1 = uv1[0]
-            sy1 = uv1[1]
-            sx2 = uv2[0]
-            sy2 = uv2[1]
+            sx0 = su0
+            sy0 = sv0
+            sx1 = su1
+            sy1 = sv1
+            sx2 = su2
+            sy2 = sv2
           else
             path = :solid
             sx0 = 0

@@ -17,6 +17,16 @@ smaug run
 
 The project uses DragonRuby Pro 7.13 through [Smaug](https://github.com/ereborstudios/smaug) (see `Smaug.toml`).
 
+### Optional C extension
+
+d3d ships an optional C extension (DragonRuby Pro) for its hot loops: cell-grid visibility, wall faces and the depth sort. Build it once per machine:
+
+```sh
+tools/build_ext.sh   # -> native/<platform>/d3d_ext.dylib (macOS) or .so (Linux)
+```
+
+The game loads it at startup with `D3D::Native.load`. With the extension, the view reaches 400 units instead of 140 and far walls fade slowly into the dark (exponential fog). Without it, the game runs pure Ruby with the linear fog that ends at 140. F1 shows which one is active. The build output (`native/`) isn't committed.
+
 ## Controls
 
 | Input | Action |
@@ -33,7 +43,7 @@ The project uses DragonRuby Pro 7.13 through [Smaug](https://github.com/ereborst
 | I | Invert mouse |
 | Esc | Pause |
 | 1 / 2 (title screen) | Start directly at a level |
-| F1 | Show fps and triangle count |
+| F1 | Show fps, triangle count and whether the C extension is active |
 
 Gamepad: sticks to fly, triggers to fire, Y for a flare, bumpers to roll, A/B to slide up/down, Select for the automap.
 
@@ -47,7 +57,8 @@ Gamepad: sticks to fly, triggers to fire, Y for a flare, bumpers to roll, A/B to
 | `app/meshes.rb` | Robot, reactor and pickup models (built with `D3D::FlatMesh`) |
 | `app/game.rb` | Flight, weapons, robot AI, reactor, HUD, menus |
 | `app/entities.rb` | Game object data holders |
-| `tools/sync_d3d.sh` | Copies the d3d engine into `lib/d3d` (default source `../d3d`) and records its commit in `lib/d3d/SOURCE` |
+| `tools/sync_d3d.sh` | Copies the d3d engine (Ruby files and the C extension's source) into `lib/d3d` (default source `../d3d`) and records its commit in `lib/d3d/SOURCE` |
+| `tools/build_ext.sh` | Builds d3d's optional C extension into `native/` |
 | `tools/generate_assets.py` | Regenerates all textures (`sprites/game/`) and sounds (`sounds/`) |
 
 To update the engine, change it in the d3d repository, then run `tools/sync_d3d.sh`.
@@ -83,7 +94,7 @@ The engine started in this game and now lives in the [d3d](https://github.com/we
 
 `visible_cells` does a breadth-first flood fill through open cells, starting from the camera's cell. It crosses into a neighbour only if:
 
-- the neighbour is within fog distance, and
+- the neighbour is within view distance, and
 - the shared face between the two cells (the "portal") is inside the view frustum.
 
 The frustum test checks each of the portal's 4 corners against the near, left, right, top and bottom planes, which all pass through the camera. If all four corners are outside the same plane, the portal is invisible. Corner positions are cached per frame, since neighbouring cells share them.
@@ -107,7 +118,7 @@ Colour is computed once per sub-quad (flat shading) and applied through the spri
 
 - the room's tint × direction shade
 - plus a **headlight** term that falls off within 60 units
-- × **fog** that fades to black by distance 140. The fog also works as a draw-distance cutoff.
+- × **fog**. The pure Ruby renderer uses a linear fog that fades to black by distance 140, which also works as the draw-distance cutoff. With the C extension, an exponential fog darkens about as quickly near the camera but only fades out (~20% brightness left at 140, ~4% at 280), and cells are drawn up to 400 units away.
 - plus **dynamic point lights** (laser bolts, muzzle flashes, explosions), each with a linear falloff. Only the 8 nearest are used.
 - plus a global "boost", which drives the red alarm pulse during the countdown.
 

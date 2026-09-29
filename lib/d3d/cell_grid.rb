@@ -304,13 +304,16 @@ module D3D
 
     # Breadth first walk through open cells starting at the renderer's camera,
     # crossing only cell boundaries (portals) that are inside the view frustum
-    # and within fog distance. Returns the flat indices of the cells reached.
+    # and within the renderer's view distance. Returns the flat indices of
+    # the cells reached.
     #
     # Hot path: works on flat cell indices with parallel i/j/k queues, and the
     # neighbour, distance and portal tests are inlined and unrolled per
     # direction (-x, +x, -y, +y, -z, +z). Grid corners are transformed to
     # camera space inline, at most once per pass (gp_x/gp_y/gp_z cache).
     def visible_cells(renderer)
+      return visible_cells_native(renderer) if Native.enabled?
+
       @stamp += 1
       stamp = @stamp
       cs = @cell_size
@@ -318,7 +321,7 @@ module D3D
       px = cam[0]
       py = cam[1]
       pz = cam[2]
-      max_d2 = (renderer.fog + cs)**2
+      max_d2 = (renderer.view_distance + cs)**2
       nx = @nx
       ny = @ny
       nz = @nz
@@ -615,6 +618,17 @@ module D3D
         end
       end
       result
+    end
+
+    # visible_cells in C (the optional extension; D3D::Ext.visible_cells
+    # mirrors it, with its own scratch arrays in @native_visibility).
+    def visible_cells_native(renderer)
+      @native_visibility ||= Ext.visibility_state(@cells.size, @gp_stamp.size)
+      cam = renderer.camera_position
+      Ext.visible_cells(@native_visibility, @cells, [
+        cam[0], cam[1], cam[2], @cell_size, renderer.view_distance, *renderer.camera_basis,
+        renderer.tan_x, renderer.tan_y, @nx, @ny, @nz
+      ])
     end
 
     private

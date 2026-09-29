@@ -20,6 +20,15 @@ class Game
   HEADLIGHT       = [0.7, 60.0]
   DARK_HEADLIGHT  = [0.05, 16.0]
   DARK_LEVEL      = 0.2
+  # Walls darken over FOG either way. With d3d's C extension the view reaches
+  # VIEW_NATIVE and the exponential fog lets far cells fade out slowly; the
+  # Ruby fallback keeps the linear fog that ends at FOG.
+  FOG             = 140
+  VIEW_NATIVE     = 400
+  # Point lights per frame; each one costs every wall sub-quad a distance
+  # test, which the C extension does cheaply.
+  MAX_LIGHTS        = 8
+  MAX_LIGHTS_NATIVE = 32
   TITLE           = 'CORE BREACH'
   MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120],
                       pylon: [110, 230, 255], boss: [255, 90, 230] }
@@ -56,7 +65,9 @@ class Game
     @level_index = index
     @level = Level.new(Levels::ALL[index])
     @renderer = D3D::SceneRenderer.new(
-      focal: 620, near: 0.4, fog: 140, materials: Level::MATERIALS,
+      focal: 620, near: 0.4, fog: FOG, materials: Level::MATERIALS,
+      view_distance: D3D::Native.enabled? ? VIEW_NATIVE : FOG,
+      fog_mode: D3D::Native.enabled? ? :exponential : :linear,
       white_path: 'sprites/game/white.png', glow_path: 'sprites/game/glow.png'
     )
     @ship = Ship.new(@level.player_start)
@@ -206,7 +217,7 @@ class Game
     end
 
     if @show_fps
-      args.outputs.labels << { x: 1270, y: 710, text: "#{args.gtk.current_framerate.round} fps  #{@renderer.triangle_count} tris",
+      args.outputs.labels << { x: 1270, y: 710, text: "#{args.gtk.current_framerate.round} fps  #{@renderer.triangle_count} tris  #{D3D::Native.enabled? ? 'native' : 'ruby'}",
                                anchor_x: 1, r: 255, g: 255, b: 255, size_px: 16 }
     end
   end
@@ -1187,19 +1198,21 @@ class Game
     @projectiles.each do |pr|
       lights << { pos: pr.pos, radius: 12, color: pr.color.map { |c| c / 255.0 }, intensity: 0.5 }
     end
-    flare_lights.each { |f| lights << f if V.dist2(f[:pos], pos) < 110**2 }
-    beacon_lights.each { |b| lights << b if V.dist2(b[:pos], pos) < 110**2 }
-    # lamps only matter when their light can reach walls near the camera
-    @level.lamps.each { |lamp| lights << lamp if V.dist2(lamp[:pos], pos) < 110**2 }
-    lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(8)
-
     r = @renderer
+    # a light matters as soon as its light can reach walls within view, so
+    # distant lamps light their walls from the moment their glow shows
+    reach = r.view_distance
+    [flare_lights, beacon_lights, @level.lamps].each do |list|
+      list.each { |l| lights << l if V.dist2(l[:pos], pos) < (reach + l[:radius])**2 }
+    end
+    lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(D3D::Native.enabled? ? MAX_LIGHTS_NATIVE : MAX_LIGHTS)
+
     adapt_headlight(r, pos)
     r.begin_frame(View.new(pos, right, up, fwd), lights: lights, ambient_boost: boost)
     r.draw_grid(@level.grid)
 
     @robots.each do |rb|
-      next unless V.dist2(rb.pos, pos) < r.fog**2
+      next unless V.dist2(rb.pos, pos) < r.view_distance**2
       next unless @level.los?(pos, rb.pos, 3.0)
       rgt, u = V.basis_from_forward(rb.fwd)
       flash = rb.hit_flash > 0 ? 0.7 : 0.0
@@ -1211,7 +1224,7 @@ class Game
     render_boss(r, pos, lights)
 
     flare_lights.each do |f|
-      next unless V.dist2(f[:pos], pos) < r.fog**2
+      next unless V.dist2(f[:pos], pos) < r.view_distance**2
       next unless @level.los?(pos, f[:pos], 3.0)
       r.draw_glow(f[:pos], 7.0 * f[:glow], 255, 200, 120, 210)
       r.draw_glow(f[:pos], 1.8, 255, 250, 230)
@@ -1228,7 +1241,7 @@ class Game
     end
 
     @level.lamps.each do |lamp|
-      next unless V.dist2(lamp[:pos], pos) < r.fog**2
+      next unless V.dist2(lamp[:pos], pos) < r.view_distance**2
       next unless @level.los?(pos, lamp[:pos], 3.0)
       c = lamp[:rgb]
       r.draw_glow(lamp[:pos], 6.0, c[0], c[1], c[2], 170)
@@ -1236,7 +1249,7 @@ class Game
     end
 
     @pickups.each do |pk|
-      next unless V.dist2(pk.pos, pos) < 90**2
+      next unless V.dist2(pk.pos, pos) < r.view_distance**2
       next unless @level.los?(pos, pk.pos, 3.0)
       pk.phase += DT
       a = pk.phase * 2
@@ -1337,7 +1350,7 @@ class Game
 
   def render_boss(r, cam, lights)
     @pylons.each do |p|
-      next unless V.dist2(p.pos, cam) < r.fog**2 && @level.los?(cam, p.pos, 3.0)
+      next unless V.dist2(p.pos, cam) < r.view_distance**2 && @level.los?(cam, p.pos, 3.0)
       spin = p.phase * 0.8
       fwd = [Math.sin(spin), 0.0, Math.cos(spin)]
       rgt, u = V.basis_from_forward(fwd)
@@ -1348,7 +1361,7 @@ class Game
     end
 
     b = @boss
-    return unless b && V.dist2(b.pos, cam) < r.fog**2 && @level.los?(cam, b.pos, 3.0)
+    return unless b && V.dist2(b.pos, cam) < r.view_distance**2 && @level.los?(cam, b.pos, 3.0)
     rgt, u = V.basis_from_forward(b.fwd)
     light = light_near(b.pos, lights)
     r.draw_mesh(MESHES[:warden], b.pos, rgt, u, b.fwd, 1.0, light, b.hit_flash > 0 ? 0.5 : 0.0,
@@ -1362,7 +1375,7 @@ class Game
 
   def render_reactor(r, cam)
     rc = @reactor
-    return unless rc && V.dist2(rc.pos, cam) < 140**2
+    return unless rc && V.dist2(rc.pos, cam) < r.view_distance**2
     ang = rc.spin * 0.6
     fwd = [Math.sin(ang), 0.0, Math.cos(ang)]
     right, up = V.basis_from_forward(fwd)

@@ -16,7 +16,9 @@ module D3D
   class SceneRenderer
     # materials: { symbol => { path: 'sprites/x.png', size: 128 } } used by grid faces.
     # lights passed to begin_frame: [{ pos: [x,y,z], radius:, color: [r,g,b] (0..1), intensity: }]
-    attr_reader :width, :height, :focal, :near, :fog, :tan_x, :tan_y,
+    # fog: distance of the darkening (see fog_mode); view_distance: how far
+    # cells and meshes are drawn at all (defaults to fog).
+    attr_reader :width, :height, :focal, :near, :fog, :view_distance, :fog_mode, :tan_x, :tan_y,
                 :triangle_count, :last_visible, :camera_position
     attr_accessor :materials
     # Strength (0..1) and reach (world units) of the camera headlight on walls.
@@ -31,7 +33,13 @@ module D3D
       @headlight_range = v.to_f
     end
 
+    # fog_mode :linear darkens to black at fog (then nothing further away is
+    # visible, so view_distance should not exceed it); :exponential darkens
+    # like the linear fog near the camera but only fades out (about 20% of
+    # the brightness left at fog, 4% at twice that), for a view_distance
+    # beyond fog.
     def initialize(width: 1280, height: 720, focal: nil, fov: 92.0, near: 0.4, fog: 140.0,
+                   view_distance: nil, fog_mode: :linear,
                    headlight_range: 60.0, headlight: 0.7, ambient_scale: 1.05,
                    materials: {}, white_path: 'sprites/d3d/white.png', white_size: 8,
                    glow_path: 'sprites/d3d/glow.png')
@@ -44,6 +52,9 @@ module D3D
       @tan_y = @half_h / @focal
       @near = near.to_f
       @fog = fog.to_f
+      @view_distance = (view_distance || fog).to_f
+      @fog_mode = fog_mode
+      raise ArgumentError, "fog_mode must be :linear or :exponential" unless [:linear, :exponential].include?(fog_mode)
       @headlight_range = headlight_range.to_f
       @headlight = headlight.to_f
       @ambient_scale = ambient_scale
@@ -109,6 +120,8 @@ module D3D
     def draw_grid(grid)
       faces = grid.faces
       @last_visible = grid.visible_cells(self)
+      return draw_grid_native(faces) if Native.enabled?
+
       @last_visible.each do |n|
         list = faces[n]
         next unless list
@@ -126,7 +139,7 @@ module D3D
 
       ctr = f.center
       d = Math.sqrt((ctr[0] - @px)**2 + (ctr[1] - @py)**2 + (ctr[2] - @pz)**2)
-      return if d > @fog + 10
+      return if d > @view_distance + 10
 
       mat = @materials[f.material]
       return unless mat
@@ -338,10 +351,64 @@ module D3D
       end
     end
 
+    # draw_face for every face of the visible cells in C (the optional
+    # extension, D3D::Ext.draw_cell_faces mirrors draw_face and light_at).
+    def draw_grid_native(faces)
+      lists = []
+      @last_visible.each do |n|
+        list = faces[n]
+        lists << native_cell_faces(list) if list
+      end
+      lights = []
+      @lights.each do |lt|
+        pos = lt[:pos]
+        c = lt[:color]
+        lights.push(pos[0], pos[1], pos[2], lt[:radius], lt[:intensity], c[0], c[1], c[2])
+      end
+      # emit_textured (called back from C) counts its own triangles, so add
+      # after the call: `@triangle_count += Ext...` would read the old value
+      # first and lose them.
+      added = Ext.draw_cell_faces(self, @list, lists, [
+        @px, @py, @pz, @rx, @ry, @rz, @ux, @uy, @uz, @fx, @fy, @fz,
+        @near, @fog, @view_distance, @fog_mode == :exponential ? 1 : 0,
+        @tan_x, @tan_y, @focal, @half_w, @half_h, @width, @height,
+        @headlight_range, @headlight, @ambient_scale, @boost[0], @boost[1], @boost[2]
+      ], lights, @materials)
+      @triangle_count += added
+      self
+    end
+
+    # A cell's face list packed for D3D::Ext.draw_cell_faces: per face
+    # normal, c0, eu, ev, center, shade, material. Cached by list identity;
+    # CellGrid rebuilds a list object whenever its faces change.
+    def native_cell_faces(list)
+      cache = (@native_faces ||= {})
+      entry = cache[list.object_id]
+      return entry[1] if entry && entry[0].equal?(list)
+
+      cache.clear if cache.size > 50_000
+      packed = []
+      list.each do |f|
+        packed.concat(f.normal)
+        packed.concat(f.c0)
+        packed.concat(f.eu)
+        packed.concat(f.ev)
+        packed.concat(f.center)
+        packed.concat(f.shade)
+        packed << f.material
+      end
+      cache[list.object_id] = [list, packed]
+      packed
+    end
+
     # Returns 0..255 rgb for a surface point at distance dist from the camera.
     def light_at(x, y, z, dist, tint)
-      fog = 1.0 - dist / @fog
-      return [0, 0, 0] if fog <= 0
+      if @fog_mode == :exponential
+        fog = Math.exp(-1.25 * dist / @fog)
+      else
+        fog = 1.0 - dist / @fog
+        return [0, 0, 0] if fog <= 0
+      end
       fog = fog * (0.6 + 0.4 * fog)
       head = dist < @headlight_range ? (1.0 - dist / @headlight_range) * @headlight : 0.0
       r = (tint[0] * @ambient_scale + head) * fog + @boost[0]
@@ -452,8 +519,13 @@ module D3D
          o[2] + rc[2] * p[0] + uc[2] * p[1] + fc[2] * p[2]]
       end
       dist = Math.sqrt(o[0] * o[0] + o[1] * o[1] + o[2] * o[2])
-      fog = 1.0 - dist / @fog
-      return if fog <= 0
+      if @fog_mode == :exponential
+        return if dist > @view_distance
+        fog = Math.exp(-1.25 * dist / @fog)
+      else
+        fog = 1.0 - dist / @fog
+        return if fog <= 0
+      end
       fog = fog * 0.7 + 0.3
       inv_s = 1.0 / scale
       ws = @white_size
@@ -523,7 +595,7 @@ module D3D
 
     # Everything queued this frame, sorted back to front.
     def sorted_primitives
-      @list.sort_by { |e| -e[0] }.map { |e| e[1] }
+      DepthSort.pairs(@list)
     end
 
     def flush(outputs)

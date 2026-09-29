@@ -3,3 +3,6 @@ logs/
 exceptions/
 .DS_Store
 errors/
+
+# Built d3d C extension (tools/build_ext.sh); only the source is committed
+native/
