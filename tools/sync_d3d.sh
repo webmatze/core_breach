@@ -11,6 +11,11 @@ fi
 rm -rf lib/d3d
 mkdir -p lib/d3d
 cp "$SRC"/app/d3d/*.rb lib/d3d/
+# C source of the optional native extension (built with tools/build_ext.sh)
+if [ -d "$SRC/app/d3d/ext" ]; then
+  mkdir -p lib/d3d/ext
+  cp "$SRC"/app/d3d/ext/*.c lib/d3d/ext/
+fi
 COMMIT=$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo unknown)
 BRANCH=$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
 DIRTY=$(git -C "$SRC" status --porcelain -- app/d3d 2>/dev/null | grep -q . && echo " (with uncommitted changes)" || true)

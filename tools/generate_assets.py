@@ -184,6 +184,7 @@ def build_textures():
     write_png(os.path.join(SPRITES, "tech.png"), S, S, tech())
     write_png(os.path.join(SPRITES, "door_blue.png"), S, S, door((50, 110, 255)))
     write_png(os.path.join(SPRITES, "door_red.png"), S, S, door((230, 40, 40)))
+    write_png(os.path.join(SPRITES, "door_yellow.png"), S, S, door((240, 200, 40)))
     write_png(os.path.join(SPRITES, "grate.png"), S, S, grate())
     write_png(os.path.join(SPRITES, "glow.png"), 64, 64, glow())
     write_png(os.path.join(SPRITES, "white.png"), 8, 8, solid_white())
@@ -277,6 +278,58 @@ def door_sound():
     return out
 
 
+def flare_sound():
+    """Ignition pop followed by a fading sizzle."""
+    rnd = random.Random(21)
+    n = int(RATE * 0.7)
+    out, y = [], 0.0
+    for i in range(n):
+        t = i / RATE
+        y += 0.35 * (rnd.uniform(-1, 1) - y)
+        pop = math.sin(t * 2 * math.pi * 220) * max(0.0, 1 - t / 0.05)
+        out.append(0.5 * y * envelope(i, n, 0.004, 1.2) + 0.4 * pop)
+    return out
+
+
+def shield_hit():
+    """Short metallic ring of a hit bouncing off an energy shield."""
+    n = int(RATE * 0.35)
+    out = []
+    for i in range(n):
+        t = i / RATE
+        s = math.sin(t * 2 * math.pi * 880) + 0.6 * math.sin(t * 2 * math.pi * 1390) + 0.3 * math.sin(t * 2 * math.pi * 2210)
+        out.append(0.22 * s * envelope(i, n, 0.001, 2.5))
+    return out
+
+
+def pylon_down():
+    """Falling electric whine over a crackling burst."""
+    rnd = random.Random(33)
+    n = int(RATE * 1.1)
+    out, phase, y = [], 0.0, 0.0
+    for i in range(n):
+        f = 1400 * (1 - i / n) ** 2 + 80
+        phase += f / RATE
+        y += 0.4 * (rnd.uniform(-1, 1) - y)
+        whine = 1.0 if (phase % 1) < 0.5 else -1.0
+        out.append((0.25 * whine + 0.6 * y) * envelope(i, n, 0.003, 1.4))
+    return out
+
+
+def rumble():
+    """Deep rolling rumble with rocks crashing down."""
+    rnd = random.Random(44)
+    n = int(RATE * 1.6)
+    out, low, mid = [], 0.0, 0.0
+    for i in range(n):
+        t = i / RATE
+        low += 0.02 * (rnd.uniform(-1, 1) - low)
+        mid += 0.2 * (rnd.uniform(-1, 1) - mid)
+        crash = 1.0 if rnd.random() < 0.004 else 0.0
+        out.append((5.0 * low + 0.6 * mid * max(0.0, 1 - t / 0.4) + 0.5 * crash) * envelope(i, n, 0.01, 1.3))
+    return out
+
+
 def alarm():
     n = int(RATE * 1.0)
     out, phase = [], 0.0
@@ -297,6 +350,10 @@ def build_sounds():
     write_wav("pickup.wav", pickup())
     write_wav("door.wav", door_sound())
     write_wav("alarm.wav", alarm())
+    write_wav("flare.wav", flare_sound())
+    write_wav("shield_hit.wav", shield_hit())
+    write_wav("pylon_down.wav", pylon_down())
+    write_wav("rumble.wav", rumble())
 
 
 if __name__ == "__main__":

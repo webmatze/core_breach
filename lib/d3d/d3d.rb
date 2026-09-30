@@ -15,6 +15,8 @@ Object.const_set(:D3D_ROOT, 'app/d3d') unless Object.const_defined?(:D3D_ROOT)
   mesh
   model
   camera
+  native
+  depth_sort
   renderer
   obj_loader
   collisions

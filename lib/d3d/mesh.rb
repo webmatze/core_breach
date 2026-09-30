@@ -12,19 +12,17 @@ module D3D
 
     def vertices=(value)
       @vertices = value
-      @face_normals = nil
-      @face_cull_data = nil
+      invalidate_normals!
     end
 
     def faces=(value)
       @faces = value
-      @face_normals = nil
-      @face_cull_data = nil
+      invalidate_normals!
     end
 
     # Unit outward normal [x, y, z] per face, from the winding (faces wind
     # clockwise seen from the front). Cached; call invalidate_normals! after
-    # moving vertices in place.
+    # moving vertices in place (also resets face_cull_data and native_data).
     def face_normals
       @face_normals ||= @faces.map do |face|
         vi = face[:v]
@@ -48,6 +46,22 @@ module D3D
     def invalidate_normals!
       @face_normals = nil
       @face_cull_data = nil
+      @native_data = nil
+    end
+
+    # Handle of the optional C extension (D3D::Ext.pack_mesh) holding a copy
+    # of the vertices, face_cull_data and the faces' uv indices; only used
+    # when D3D::Native is enabled. Cached alongside face_cull_data.
+    def native_data
+      @native_data ||= begin
+        uv_indices = [[], [], []]
+        @faces.each do |f|
+          uv = f[:uv]
+          3.times { |k| uv_indices[k] << (uv && uv[k]) }
+        end
+        Ext.pack_mesh(@vertices.map(&:x), @vertices.map(&:y), @vertices.map(&:z),
+                      *face_cull_data, *uv_indices)
+      end
     end
 
     # Flat per-face arrays for the renderer's back face cull:

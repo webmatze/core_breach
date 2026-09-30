@@ -3,7 +3,7 @@
 class Ship
   RADIUS = 2.4
 
-  attr_accessor :vel, :shields, :energy, :missiles, :fire_cooldown, :missile_cooldown,
+  attr_accessor :vel, :shields, :energy, :missiles, :fire_cooldown, :missile_cooldown, :flare_cooldown,
                 :laser_side, :alive, :dead_timer, :hit_flash, :spin
   attr_reader :pose
 
@@ -20,6 +20,7 @@ class Ship
     @spin = [0.0, 0.0, 0.0] # pitch, yaw, roll velocity
     @fire_cooldown = 0
     @missile_cooldown = 0
+    @flare_cooldown = 0
     @laser_side = 1
     @alive = true
     @dead_timer = 0
@@ -48,14 +49,21 @@ class Ship
 end
 
 class Robot
+  # ram: contact damage for robots that fly into the ship.
+  # armor: damage multiplier per projectile kind (missing = 1.0).
+  # stationary: never moves, only turns (wall turrets).
   STATS = {
-    drone:  { hp: 30,  radius: 2.4, speed: 20, turn: 2.4, fire: 1.5, score: 100 },
-    hunter: { hp: 22,  radius: 2.4, speed: 34, turn: 3.2, fire: nil, score: 150 },
-    brute:  { hp: 110, radius: 3.6, speed: 11, turn: 1.3, fire: 2.4, score: 300 }
+    drone:    { hp: 30,  radius: 2.4, speed: 20, turn: 2.4, fire: 1.5, score: 100 },
+    hunter:   { hp: 22,  radius: 2.4, speed: 34, turn: 3.2, fire: nil, score: 150, ram: 12 },
+    brute:    { hp: 110, radius: 3.6, speed: 11, turn: 1.3, fire: 2.4, score: 300 },
+    turret:   { hp: 60,  radius: 2.6, speed: 0,  turn: 1.8, fire: 1.6, score: 200, range: 80,
+                armor: { laser: 0.25 }, stationary: true },
+    splitter: { hp: 40,  radius: 3.0, speed: 15, turn: 2.0, fire: nil, score: 200, ram: 10 },
+    mini:     { hp: 10,  radius: 1.5, speed: 42, turn: 4.0, fire: nil, score: 50, ram: 6, scale: 0.6 }
   }
 
   attr_accessor :kind, :pos, :vel, :fwd, :hp, :cooldown, :alert, :sees, :last_seen,
-                :hit_flash, :phase, :contact_cooldown, :think
+                :hit_flash, :phase, :contact_cooldown, :think, :mount, :burst
 
   def initialize(kind, pos)
     @kind = kind
@@ -71,6 +79,8 @@ class Robot
     @phase = rand * 10
     @contact_cooldown = 0
     @think = rand(10)
+    @mount = nil # wall normal of a mounted turret
+    @burst = 0
   end
 
   def stats
@@ -79,6 +89,14 @@ class Robot
 
   def radius
     stats[:radius]
+  end
+
+  def scale
+    stats[:scale] || 1.0
+  end
+
+  def max_hp
+    stats[:hp]
   end
 end
 
@@ -94,6 +112,49 @@ class Reactor
     @hit_flash = 0
     @destroyed = false
     @spin = 0
+  end
+end
+
+# A shield pylon powering the Warden's shield. Stands upright on the floor.
+class Pylon
+  RADIUS = 2.0
+  HALF_HEIGHT = 4.5
+  MAX_HP = 120
+
+  attr_accessor :pos, :hp, :hit_flash, :phase
+
+  def initialize(pos)
+    @pos = pos
+    @hp = MAX_HP
+    @hit_flash = 0
+    @phase = rand * 6
+  end
+end
+
+# The Warden: a slow, heavily armed boss guarding the core. Shielded while
+# any pylon stands.
+class Boss
+  RADIUS = 7.0
+  MAX_HP = 600
+
+  attr_accessor :pos, :vel, :fwd, :hp, :cooldown, :summon_cooldown, :hit_flash,
+                :shield_flash, :phase, :sees, :last_seen, :think, :spread_side, :contact_cooldown
+
+  def initialize(pos)
+    @pos = pos.dup
+    @vel = [0.0, 0.0, 0.0]
+    @fwd = [0.0, 0.0, -1.0]
+    @hp = MAX_HP
+    @cooldown = 2.0
+    @summon_cooldown = 8.0
+    @hit_flash = 0
+    @shield_flash = 0
+    @phase = 0
+    @sees = false
+    @last_seen = nil
+    @think = 0
+    @spread_side = 1
+    @contact_cooldown = 0
   end
 end
 
@@ -134,5 +195,16 @@ class Particle
     @size = size
     @grow = grow
     @color = color
+  end
+end
+
+# A flare stuck to a wall: a flickering light that burns out.
+class Flare
+  attr_accessor :pos, :life, :phase
+
+  def initialize(pos, life)
+    @pos = pos
+    @life = life
+    @phase = rand * 10
   end
 end

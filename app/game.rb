@@ -4,7 +4,6 @@ class Game
   DRAG            = 2.9
   TURN_RATE       = 2.3
   MOUSE_SENS      = 0.0032
-  COUNTDOWN       = 50.0
   LASER_SPEED     = 190.0
   LASER_DAMAGE    = 7
   LASER_COST      = 0.45
@@ -12,8 +11,30 @@ class Game
   MISSILE_DAMAGE  = 55
   MISSILE_SPLASH  = 16.0
   PICKUP_RADIUS   = 5.0
+  FLARE_SPEED     = 75.0
+  FLARE_COST      = 2.0
+  FLARE_LIFE      = 20.0
+  FLARE_COLOR     = [255, 215, 150]
+  MAX_FLARES      = 6
+  # Headlight in normal rooms vs. rooms whose light level is below DARK_LEVEL.
+  HEADLIGHT       = [0.7, 60.0]
+  DARK_HEADLIGHT  = [0.05, 16.0]
+  DARK_LEVEL      = 0.2
+  # Walls darken over FOG either way. With d3d's C extension the view reaches
+  # VIEW_NATIVE and the exponential fog lets far cells fade out slowly; the
+  # Ruby fallback keeps the linear fog that ends at FOG.
+  FOG             = 140
+  VIEW_NATIVE     = 400
+  # Point lights per frame; each one costs every wall sub-quad a distance
+  # test, which the C extension does cheaply.
+  MAX_LIGHTS        = 8
+  MAX_LIGHTS_NATIVE = 32
   TITLE           = 'CORE BREACH'
-  MAP_COLORS      = { blue: [70, 130, 255], red: [255, 70, 70], exit: [90, 255, 120] }
+  MAP_COLORS      = { blue: [70, 130, 255], yellow: [240, 210, 60], red: [255, 70, 70], exit: [90, 255, 120],
+                      pylon: [110, 230, 255], boss: [255, 90, 230] }
+  KEY_COLORS      = { blue: [60, 120, 255], yellow: [240, 200, 40], red: [240, 60, 60] }
+  KEY_PICKUPS     = { blue_key: :blue, yellow_key: :yellow, red_key: :red }
+  START_KEYS      = [:one, :two, :three, :four, :five, :six, :seven, :eight, :nine]
 
   # What the renderer and automap need from a camera: position + basis vectors.
   View = Struct.new(:position, :right, :up, :fwd)
@@ -25,43 +46,71 @@ class Game
     @title_time = 0
     @invert_mouse = false
     @show_fps = false
-    setup_level
+    new_campaign
+    setup_level(0)
   end
 
   # ================================================================= setup
 
-  def setup_level
-    @level = Level.new
+  # Score, lives and totals that carry over from level to level.
+  def new_campaign
+    @score = 0
+    @lives = 3
+    @total_kills = 0
+    @total_time = 0
+    @carry = nil
+  end
+
+  def setup_level(index)
+    @level_index = index
+    @level = Level.new(Levels::ALL[index])
     @renderer = D3D::SceneRenderer.new(
-      focal: 620, near: 0.4, fog: 140, materials: Level::MATERIALS,
+      focal: 620, near: 0.4, fog: FOG, materials: Level::MATERIALS,
+      view_distance: D3D::Native.enabled? ? VIEW_NATIVE : FOG,
+      fog_mode: D3D::Native.enabled? ? :exponential : :linear,
       white_path: 'sprites/game/white.png', glow_path: 'sprites/game/glow.png'
     )
     @ship = Ship.new(@level.player_start)
-    @lives = 3
-    @score = 0
+    if @carry
+      @ship.shields = [@carry[:shields], 100.0].max
+      @ship.energy = [@carry[:energy], 100.0].max
+      @ship.missiles = @carry[:missiles]
+    end
     @keys = {}
     @robots = []
     @pickups = []
     @projectiles = []
     @particles = []
     @lights = []
+    @flares = []
     @messages = []
     @countdown = nil
+    @pending_collapses = nil
     @shake = 0
     @damage_flash = 0
     @pickup_flash = 0
     @play_time = 0
     @door_msg_cooldown = 0
     @kills = 0
-    @level.spawns.each do |kind, pos|
-      pos = find_open(pos)
+    @armor_hint_shown = false
+    @level.spawns.each do |kind, pos, mount|
+      pos = find_open(pos) unless mount
       if Robot::STATS[kind]
-        @robots << Robot.new(kind, pos)
+        rb = Robot.new(kind, pos)
+        if mount
+          rb.mount = mount
+          rb.fwd = mount.dup
+        end
+        @robots << rb
       else
         @pickups << Pickup.new(kind, pos)
       end
     end
-    @reactor = Reactor.new(@level.reactor_pos)
+    @reactor = @level.reactor_pos ? Reactor.new(@level.reactor_pos) : nil
+    @boss = @level.boss_pos ? Boss.new(@level.boss_pos) : nil
+    @pylons = @level.pylons.map { |p| Pylon.new(p) }
+    @pylon_total = @pylons.size
+    @shield_hint_shown = false
     grid = @level.grid
     exits = @level.exit_cells
     @automap = D3D::GridMap.new(grid, edge_color: lambda { |n, tag|
@@ -82,12 +131,55 @@ class Game
     pos
   end
 
-  def start_game
-    setup_level
+  def start_game(index = 0)
+    new_campaign
+    setup_level(index)
+    begin_level
+  end
+
+  def begin_level
     @state = :playing
     grab_mouse(true)
-    message 'Find the blue key. Destroy the reactor. Escape.', 6
+    message "LEVEL #{@level_index + 1}: #{@level.defn::TITLE.upcase}", 5, true
+    message level_text(:briefing), 7, true
     play :door
+  end
+
+  def level_text(key)
+    @level.defn::MESSAGES[key]
+  end
+
+  def last_level?
+    @level_index >= Levels::ALL.size - 1
+  end
+
+  def back_to_title
+    @state = :title
+    new_campaign
+    setup_level(0)
+  end
+
+  # Exit reached: bank the bonuses, then go to the intermission or the final victory screen.
+  def complete_level
+    @escape_bonus = (@countdown * 100).to_i
+    @shield_bonus = @ship.shields.to_i * 10
+    @score += @escape_bonus + @shield_bonus
+    @escape_time = @countdown
+    @messages.clear
+    grab_mouse(false)
+    play :pickup
+    if last_level?
+      @state = :victory
+      @end_reason = "You escaped the #{@level.defn::TITLE.downcase} with #{@countdown.round(1)}s to spare."
+    else
+      @state = :intermission
+    end
+  end
+
+  def next_level
+    @carry = { shields: @ship.shields, energy: @ship.energy, missiles: @ship.missiles }
+    setup_level(@level_index + 1)
+    begin_level
   end
 
   # ================================================================= main loop
@@ -116,13 +208,16 @@ class Game
     when :paused
       render_play
       render_pause
+    when :intermission
+      render_play
+      render_intermission
     when :gameover, :victory
       render_play
       render_end
     end
 
     if @show_fps
-      args.outputs.labels << { x: 1270, y: 710, text: "#{args.gtk.current_framerate.round} fps  #{@renderer.triangle_count} tris",
+      args.outputs.labels << { x: 1270, y: 710, text: "#{args.gtk.current_framerate.round} fps  #{@renderer.triangle_count} tris  #{D3D::Native.enabled? ? 'native' : 'ruby'}",
                                anchor_x: 1, r: 255, g: 255, b: 255, size_px: 16 }
     end
   end
@@ -158,6 +253,7 @@ class Game
       ['Q E', 'roll'],
       ['Left click / Space', 'lasers'],
       ['Right click / Ctrl', 'concussion missile'],
+      ['G', 'flare (lights dark rooms)'],
       ['Tab', 'automap'],
       ['I', 'invert mouse'],
       ['Esc', 'pause']
@@ -171,23 +267,34 @@ class Game
       out << { x: 640, y: 110, text: 'Press ENTER or click to launch', size_px: 30, anchor_x: 0.5,
                r: 255, g: 255, b: 255, primitive_marker: :label }
     end
-    out << { x: 640, y: 50, text: 'Gamepad: sticks to fly, triggers to fire, bumpers to roll, A/B slide up/down',
+    out << { x: 640, y: 50, text: 'Gamepad: sticks to fly, triggers to fire, Y flare, bumpers to roll, A/B slide up/down',
              size_px: 18, anchor_x: 0.5, r: 150, g: 150, b: 160, primitive_marker: :label }
 
-    start = args.inputs.keyboard.key_down.enter || args.inputs.mouse.click ||
+    out << { x: 640, y: 80, text: "Practice: press 1-#{Levels::ALL.size} to start at a level",
+             size_px: 18, anchor_x: 0.5, r: 150, g: 150, b: 160, primitive_marker: :label }
+
+    kb = args.inputs.keyboard
+    start = kb.key_down.enter || args.inputs.mouse.click ||
             args.inputs.controller_one.key_down.start || args.inputs.controller_one.key_down.a
-    start_game if start
+    return start_game(0) if start
+    Levels::ALL.size.times do |n|
+      return start_game(n) if kb.key_down.send(START_KEYS[n])
+    end
   end
 
   # ================================================================= update
 
   def update_play
     @play_time += DT
+    @total_time += DT
     handle_flight_input if @ship.alive
     update_ship
     update_robots
     update_reactor
+    update_boss
+    @pylons.each { |p| p.hit_flash -= DT; p.phase += DT }
     update_projectiles
+    update_flares
     update_particles
     update_lights
     update_countdown
@@ -266,6 +373,43 @@ class Game
     fire_secondary = kb.control || ms.button_right || pad.l2
     fire_laser if fire_primary && s.fire_cooldown <= 0
     fire_missile if fire_secondary && s.missile_cooldown <= 0
+    s.flare_cooldown -= DT
+    fire_flare if (kb.g || pad.y) && s.flare_cooldown <= 0
+  end
+
+  def fire_flare
+    s = @ship
+    s.flare_cooldown = 1.0
+    if s.energy < FLARE_COST
+      message('Not enough energy for a flare!', 1)
+      return
+    end
+    s.energy -= FLARE_COST
+    origin = V.madd(V.madd(s.pos, s.up, -1.0), s.fwd, 2.0)
+    vel = V.madd(V.scale(s.fwd, FLARE_SPEED), s.vel, 0.5)
+    @projectiles << Projectile.new(origin, vel, :player, 0, :flare, FLARE_COLOR, 1.4, 4.0)
+    play :flare, 0.4
+  end
+
+  # A flare that hits a wall stays there, just in front of the surface.
+  def stick_flare(pos)
+    @flares.shift while @flares.size >= MAX_FLARES
+    @flares << Flare.new(pos, FLARE_LIFE)
+    sparks(pos, FLARE_COLOR, 6)
+  end
+
+  def update_flares
+    @flares.each { |f| f.life -= DT }
+    @flares.reject! { |f| f.life <= 0 }
+  end
+
+  # Flickering light of each burning flare; fades out over its last 3 seconds.
+  def flare_lights
+    @flares.map do |f|
+      flicker = 0.85 + 0.1 * Math.sin(@play_time * 23 + f.phase) + 0.05 * rand
+      fade = [f.life / 3.0, 1.0].min
+      { pos: f.pos, radius: 45, color: [1.0, 0.85, 0.6], intensity: 1.1 * flicker * fade, glow: flicker * fade }
+    end
   end
 
   def fire_laser
@@ -315,7 +459,7 @@ class Game
           s.shields = 100.0
           s.energy = [s.energy, 100.0].max
           s.missiles = [s.missiles, 3].max
-          message 'Ship restored at the hangar.', 3
+          message level_text(:respawn), 3
         end
       end
       return
@@ -342,7 +486,7 @@ class Game
       kind = @level.doors[door]
       if kind == :exit
         if @door_msg_cooldown <= 0
-          message 'This hatch only opens when the reactor goes critical.', 3
+          message level_text(:exit_locked), 3
           @door_msg_cooldown = 3
         end
       elsif @keys[kind]
@@ -362,14 +506,7 @@ class Game
     end
 
     # exit
-    if @countdown && @level.exit_at?(s.pos)
-      @state = :victory
-      bonus = (@countdown * 100).to_i
-      @score += bonus + @ship.shields.to_i * 10
-      @end_reason = "You escaped with #{@countdown.round(1)}s to spare."
-      grab_mouse(false)
-      play :pickup
-    end
+    complete_level if @countdown && @level.exit_at?(s.pos)
   end
 
   def collect(pk)
@@ -386,12 +523,9 @@ class Game
     when :missiles
       s.missiles += 4
       message '4 concussion missiles!', 2
-    when :blue_key
-      @keys[:blue] = true
-      message 'BLUE key acquired! The blue hatch is in the floor of the big cavern.', 5
-    when :red_key
-      @keys[:red] = true
-      message 'RED key acquired! The reactor lies behind the red door.', 5
+    when *KEY_PICKUPS.keys
+      @keys[KEY_PICKUPS[pk.kind]] = true
+      message level_text(pk.kind), 5, true
     end
     @score += 50
     @pickup_flash = 1
@@ -430,7 +564,8 @@ class Game
       dist = V.len(to_p)
 
       if rb.think % 8 == 0
-        rb.sees = s.alive && dist < 95 && @level.los?(rb.pos, s.pos)
+        in_front = rb.mount.nil? || V.dot(to_p, rb.mount) > 0
+        rb.sees = s.alive && in_front && dist < (st[:range] || 95) && @level.los?(rb.pos, s.pos)
         if rb.sees
           rb.alert = 5.0
           rb.last_seen = s.pos.dup
@@ -453,32 +588,46 @@ class Game
           end
           desired = V.madd(desired, right, Math.sin(rb.phase * 1.3) * st[:speed] * 0.7)
           desired = V.madd(desired, up, Math.cos(rb.phase * 0.9) * st[:speed] * 0.3)
-        when :hunter
+        when :hunter, :mini
           desired = V.scale(target_dir, st[:speed])
-          desired = V.madd(desired, right, Math.sin(rb.phase * 3.0) * 6)
+          desired = V.madd(desired, right, Math.sin(rb.phase * 3.0) * 6 * rb.scale)
+        when :splitter
+          desired = V.scale(target_dir, st[:speed])
+          desired = V.madd(desired, up, Math.sin(rb.phase * 1.7) * 4)
         when :brute
           desired = V.scale(target_dir, st[:speed]) if !rb.sees || dist > 26
         end
 
         if rb.sees && st[:fire] && rb.cooldown <= 0 && V.dot(rb.fwd, target_dir) > 0.9
           robot_fire(rb, right)
-          rb.cooldown = st[:fire] * (0.8 + rand * 0.4)
+          if rb.kind == :turret && rb.burst == 0
+            rb.burst = 1
+            rb.cooldown = 0.18
+          else
+            rb.burst = 0
+            rb.cooldown = st[:fire] * (0.8 + rand * 0.4)
+          end
         end
 
-        if rb.kind == :hunter && s.alive && dist < rb.radius + Ship::RADIUS + 0.6 && rb.contact_cooldown <= 0
-          damage_ship(12)
+        if st[:ram] && s.alive && dist < rb.radius + Ship::RADIUS + 0.6 && rb.contact_cooldown <= 0
+          damage_ship(st[:ram])
           push = V.norm(to_p)
           s.vel = V.madd(s.vel, push, 35)
           rb.vel = V.madd(rb.vel, push, -30)
           rb.contact_cooldown = 1.0
           explode(V.lerp(rb.pos, s.pos, 0.5), 0.6, [180, 255, 180], false)
         end
+      elsif rb.mount
+        # idle turret: slow sweep across the space in front of its wall
+        tangent = V.basis_from_forward(rb.mount)[0]
+        rb.fwd = V.norm(V.madd(rb.mount, tangent, Math.sin(rb.phase * 0.5) * 0.9))
       else
         # idle patrol: bob and slowly turn
         rb.fwd = V.norm(V.madd(rb.fwd, V.basis_from_forward(rb.fwd)[0], 0.3 * DT))
         desired = [0.0, Math.sin(rb.phase) * 2.0, 0.0]
       end
 
+      next if st[:stationary]
       rb.vel = V.lerp(rb.vel, desired, [3.0 * DT, 1.0].min)
       rb.pos = V.madd(rb.pos, rb.vel, DT)
       hit = @level.collide_sphere(rb.pos, rb.radius)
@@ -496,9 +645,13 @@ class Game
         d2 = V.dist2(a.pos, b.pos)
         next if d2 >= min * min || d2 < 1e-6
         d = Math.sqrt(d2)
-        push = V.scale(V.sub(a.pos, b.pos), (min - d) / d * 0.5)
-        a.pos = V.add(a.pos, push)
-        b.pos = V.sub(b.pos, push)
+        a_fixed = a.stats[:stationary]
+        b_fixed = b.stats[:stationary]
+        next if a_fixed && b_fixed
+        share = a_fixed || b_fixed ? 1.0 : 0.5
+        push = V.scale(V.sub(a.pos, b.pos), (min - d) / d * share)
+        a.pos = V.add(a.pos, push) unless a_fixed
+        b.pos = V.sub(b.pos, push) unless b_fixed
       end
     end
   end
@@ -507,6 +660,8 @@ class Game
     muzzle = V.madd(rb.pos, rb.fwd, rb.radius + 0.5)
     aim = V.norm(V.sub(@ship.pos, muzzle))
     case rb.kind
+    when :turret
+      @projectiles << Projectile.new(muzzle, V.scale(aim, 64), :enemy, 7, :plasma, [255, 160, 40], 1.6)
     when :drone
       @projectiles << Projectile.new(muzzle, V.scale(aim, 62), :enemy, 8, :plasma, [255, 90, 40], 1.8)
     when :brute
@@ -521,7 +676,16 @@ class Game
     play :robot_shot, 0.4, rb.pos
   end
 
-  def damage_robot(rb, amount)
+  def damage_robot(rb, amount, kind = nil)
+    armor = rb.stats[:armor] && rb.stats[:armor][kind]
+    if armor
+      amount *= armor
+      sparks(rb.pos, [200, 200, 220], 4)
+      unless @armor_hint_shown
+        message 'Turret armour deflects lasers. Use missiles!', 4
+        @armor_hint_shown = true
+      end
+    end
     rb.hp -= amount
     rb.hit_flash = 0.1
     rb.alert = 6.0
@@ -530,7 +694,9 @@ class Game
     @robots.delete(rb)
     @score += rb.stats[:score]
     @kills += 1
-    explode(rb.pos, rb.kind == :brute ? 2.2 : 1.4, [255, 170, 70])
+    @total_kills += 1
+    explode(rb.pos, { brute: 2.2, mini: 0.8 }.fetch(rb.kind, 1.4), [255, 170, 70])
+    split(rb) if rb.kind == :splitter
     drop = rand
     if drop < 0.22
       @pickups << Pickup.new(:energy, rb.pos.dup)
@@ -541,10 +707,24 @@ class Game
     end
   end
 
+  # A destroyed splitter releases two mini-hunters that attack at once.
+  def split(rb)
+    right = V.basis_from_forward(rb.fwd)[0]
+    [-1, 1].each do |side|
+      mini = Robot.new(:mini, V.madd(rb.pos, right, side * 2.0))
+      @level.collide_sphere(mini.pos, mini.radius)
+      mini.vel = V.scale(right, side * 20.0)
+      mini.alert = 6.0
+      mini.last_seen = @ship.pos.dup
+      @robots << mini
+    end
+  end
+
   # ================================================================= reactor
 
   def update_reactor
     r = @reactor
+    return unless r
     r.spin += DT
     r.hit_flash -= DT
     return if r.destroyed
@@ -572,21 +752,191 @@ class Game
     r.hit_flash = 0.1
     return if r.hp > 0
     r.destroyed = true
-    @score += 5000
-    @countdown = COUNTDOWN
-    explode(r.pos, 5.0, [255, 200, 90])
-    6.times { explode(V.madd(r.pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
+    objective_complete(r.pos, 5000)
+  end
+
+  # Reactor or boss destroyed: big explosion, countdown starts, exit opens.
+  def objective_complete(pos, points)
+    @score += points
+    @countdown = @level.defn::COUNTDOWN
+    @pending_collapses = @level.collapses.dup
+    @collapse_warned = false
+    explode(pos, 5.0, [255, 200, 90])
+    6.times { explode(V.madd(pos, V.random_unit, 6), 2.0, [255, 120, 40], false) }
     @shake = 2.0
     exit_door = @level.door_idx(:exit)
     @level.open_door(exit_door) if exit_door
-    message 'REACTOR DESTROYED! The escape hatch in the chamber ceiling is open. GET OUT!', 8
+    message level_text(:objective_done), 8, true
+  end
+
+  # Caves in scheduled cells once their time has come, but never the cell the
+  # ship is in, and only while the ship is inside the level's escape zone.
+  def update_collapses
+    return if @pending_collapses.nil? || @pending_collapses.empty?
+    return unless @ship.alive && @level.in_escape_zone?(@ship.pos)
+    elapsed = @level.defn::COUNTDOWN - @countdown
+    @pending_collapses.reject! do |i, j, k, time|
+      next false if time > elapsed
+      next false if @level.sphere_in_cell?(@ship.pos, Ship::RADIUS + 0.5, i, j, k)
+      collapse_cell(i, j, k)
+      true
+    end
+  end
+
+  def collapse_cell(i, j, k)
+    return unless @level.grid.solidify(i, j, k)
+    center = @level.grid.cell_center(i, j, k)
+    inside = ->(p, r) { @level.sphere_in_cell?(p, r, i, j, k) }
+    @robots.dup.each { |rb| damage_robot(rb, 10_000) if inside.call(rb.pos, rb.radius * 0.5) }
+    @pickups.reject! { |pk| inside.call(pk.pos, 0.5) }
+    @flares.reject! { |f| inside.call(f.pos, 0.5) }
+    14.times do
+      vel = V.scale(V.random_unit, 8 + rand * 14)
+      @particles << Particle.new(V.madd(center, V.random_unit, 4.0), vel, 0.6 + rand * 0.5, 1.4, 2.5, [150, 110, 80])
+    end
+    8.times do
+      @particles << Particle.new(V.madd(center, V.random_unit, 5.0), V.scale(V.random_unit, 3), 1.6, 4.0, 6.0, [70, 65, 60])
+    end
+    add_light(center, 30, [1.0, 0.6, 0.3], 0.8, 0.4)
+    d = V.dist(center, @ship.pos)
+    @shake = [@shake, 1.2 * (1 - d / 120.0)].max if d < 120
+    play :rumble, 0.9, center
+    return if @collapse_warned
+    @collapse_warned = true
+    message level_text(:collapse), 5, true if level_text(:collapse)
+  end
+
+  # ================================================================= boss
+
+  def boss_shielded?
+    !@pylons.empty?
+  end
+
+  def update_boss
+    b = @boss
+    return unless b
+    s = @ship
+    b.phase += DT
+    b.hit_flash -= DT
+    b.shield_flash -= DT
+    b.cooldown -= DT
+    b.summon_cooldown -= DT
+    b.contact_cooldown -= DT
+    b.think += 1
+    to_p = V.sub(s.pos, b.pos)
+    dist = V.len(to_p)
+    if b.think % 10 == 0
+      b.sees = s.alive && dist < 110 && @level.los?(b.pos, s.pos)
+      b.last_seen = s.pos.dup if b.sees
+    end
+
+    desired = [0.0, Math.sin(b.phase * 0.7) * 3.0, 0.0]
+    if b.last_seen
+      dir = V.norm(V.sub(b.last_seen, b.pos))
+      b.fwd = V.norm(V.lerp(b.fwd, dir, [1.2 * DT, 1.0].min))
+      if dist > 45
+        desired = V.madd(desired, dir, 10.0)
+      elsif dist < 25
+        desired = V.madd(desired, dir, -8.0)
+      end
+    end
+    b.vel = V.lerp(b.vel, desired, [2.0 * DT, 1.0].min)
+    b.pos = V.madd(b.pos, b.vel, DT)
+    @level.collide_sphere(b.pos, Boss::RADIUS)
+
+    if b.sees && b.cooldown <= 0 && V.dot(b.fwd, V.norm(to_p)) > 0.8
+      boss_fire(b)
+      b.cooldown = 2.0
+    end
+    boss_summon(b) if b.sees && b.summon_cooldown <= 0
+
+    if s.alive && dist < Boss::RADIUS + Ship::RADIUS + 0.5 && b.contact_cooldown <= 0
+      damage_ship(15)
+      s.vel = V.madd(s.vel, V.norm(to_p), 40)
+      b.contact_cooldown = 1.0
+    end
+  end
+
+  # 5-shot spread from one of the two cannons, alternating sides.
+  def boss_fire(b)
+    right, up = V.basis_from_forward(b.fwd)
+    b.spread_side = -b.spread_side
+    muzzle = V.madd(V.madd(b.pos, right, 4.6 * b.spread_side), b.fwd, 5.0)
+    aim = V.norm(V.sub(@ship.pos, muzzle))
+    [-0.16, -0.08, 0.0, 0.08, 0.16].each do |spread|
+      dir = V.norm(V.madd(aim, right, spread))
+      @projectiles << Projectile.new(muzzle.dup, V.scale(dir, 55), :enemy, 10, :plasma, [255, 90, 230], 2.4)
+    end
+    add_light(muzzle, 30, [1.0, 0.4, 0.9], 0.9, 0.15)
+    play :robot_shot, 0.7, b.pos
+  end
+
+  # Calls two drones, as long as fewer than 4 of its drones are around.
+  def boss_summon(b)
+    b.summon_cooldown = 20.0
+    nearby = @robots.count { |rb| rb.kind == :drone && V.dist2(rb.pos, b.pos) < 80**2 }
+    return if nearby >= 4
+    right = V.basis_from_forward(b.fwd)[0]
+    [-1, 1].each do |side|
+      d = Robot.new(:drone, V.madd(b.pos, right, side * 10.0))
+      @level.collide_sphere(d.pos, d.radius)
+      d.alert = 6.0
+      d.last_seen = @ship.pos.dup
+      @robots << d
+    end
+    add_light(b.pos, 50, [1.0, 0.3, 0.9], 1.2, 0.5)
+    message 'The Warden calls for reinforcements!', 3
+  end
+
+  def damage_boss(amount)
+    b = @boss
+    return unless b
+    if boss_shielded?
+      b.shield_flash = 0.3
+      play :shield_hit, 0.5, b.pos
+      unless @shield_hint_shown
+        message "The Warden is shielded. Destroy the #{@pylon_total} shield pylons!", 5
+        @shield_hint_shown = true
+      end
+      return
+    end
+    b.hp -= amount
+    b.hit_flash = 0.1
+    return if b.hp > 0
+    pos = b.pos
+    @boss = nil
+    @kills += 1
+    @total_kills += 1
+    objective_complete(pos, 8000)
+  end
+
+  def damage_pylon(p, amount)
+    p.hp -= amount
+    p.hit_flash = 0.1
+    return if p.hp > 0
+    @pylons.delete(p)
+    @score += 500
+    explode(p.pos, 2.0, [120, 230, 255])
+    play :pylon_down, 0.8, p.pos
+    if @pylons.empty?
+      message(@boss ? "All shield pylons destroyed! The Warden's shield is down!" : 'All shield pylons destroyed!', 5)
+    else
+      message "Shield pylon destroyed. #{@pylons.size} remaining.", 4
+    end
+  end
+
+  # Distance test against the pylon's upright capsule.
+  def pylon_hit?(p, pos, r)
+    y = D3D.clamp(pos[1], p.pos[1] - Pylon::HALF_HEIGHT, p.pos[1] + Pylon::HALF_HEIGHT)
+    V.dist2(pos, [p.pos[0], y, p.pos[2]]) < (Pylon::RADIUS + r)**2
   end
 
   def update_countdown
     return unless @countdown
     before = @countdown
     @countdown -= DT
-    @shake = [@shake, 0.25 + (1.0 - @countdown / COUNTDOWN) * 0.6].max
+    update_collapses
+    @shake = [@shake, 0.25 + (1.0 - @countdown / @level.defn::COUNTDOWN) * 0.6].max
     play(:alarm, 0.35) if before.floor != @countdown.floor && @countdown.floor.even?
     if rand < 0.05 && @ship.alive
       explode(V.madd(@ship.pos, V.random_unit, 25 + rand * 20), 1.2, [255, 140, 50], false)
@@ -609,12 +959,18 @@ class Game
       steps = 2
       dead = false
       steps.times do
+        prev = pr.pos
         pr.pos = V.madd(pr.pos, pr.vel, DT / steps)
         if @level.solid_at?(pr.pos)
-          impact(pr, nil)
+          if pr.kind == :flare
+            stick_flare(prev)
+          else
+            impact(pr, nil)
+          end
           dead = true
           break
         end
+        next if pr.kind == :flare # flares fly past robots
         if pr.owner == :player
           target = @robots.find { |rb| V.dist2(rb.pos, pr.pos) < (rb.radius + pr.size * 0.5)**2 }
           if target
@@ -622,8 +978,19 @@ class Game
             dead = true
             break
           end
-          if !@reactor.destroyed && V.dist2(@reactor.pos, pr.pos) < Reactor::RADIUS**2
+          if @reactor && !@reactor.destroyed && V.dist2(@reactor.pos, pr.pos) < Reactor::RADIUS**2
             impact(pr, @reactor)
+            dead = true
+            break
+          end
+          if @boss && V.dist2(@boss.pos, pr.pos) < Boss::RADIUS**2
+            impact(pr, @boss)
+            dead = true
+            break
+          end
+          pylon = @pylons.find { |p| pylon_hit?(p, pr.pos, pr.size * 0.5) }
+          if pylon
+            impact(pr, pylon)
             dead = true
             break
           end
@@ -648,17 +1015,30 @@ class Game
         d = V.dist(rb.pos, pr.pos)
         next if d > MISSILE_SPLASH
         dmg = rb == target ? pr.damage : pr.damage * 0.6 * (1 - d / MISSILE_SPLASH)
-        damage_robot(rb, dmg)
+        damage_robot(rb, dmg, :missile)
       end
-      rd = V.dist(@reactor.pos, pr.pos)
-      damage_reactor(target == @reactor ? pr.damage : pr.damage * 0.5) if rd < MISSILE_SPLASH + Reactor::RADIUS
+      if @reactor
+        rd = V.dist(@reactor.pos, pr.pos)
+        damage_reactor(target == @reactor ? pr.damage : pr.damage * 0.5) if rd < MISSILE_SPLASH + Reactor::RADIUS
+      end
+      if @boss && V.dist(@boss.pos, pr.pos) < MISSILE_SPLASH + Boss::RADIUS
+        damage_boss(target == @boss ? pr.damage : pr.damage * 0.5)
+      end
+      @pylons.dup.each do |p|
+        next unless pylon_hit?(p, pr.pos, MISSILE_SPLASH * 0.5)
+        damage_pylon(p, p == target ? pr.damage : pr.damage * 0.5)
+      end
       sd = V.dist(@ship.pos, pr.pos)
       damage_ship(20 * (1 - sd / MISSILE_SPLASH)) if sd < MISSILE_SPLASH * 0.7
     else
       if target.is_a?(Robot)
-        damage_robot(target, pr.damage)
+        damage_robot(target, pr.damage, pr.kind)
       elsif target.is_a?(Reactor)
         damage_reactor(pr.damage)
+      elsif target.is_a?(Boss)
+        damage_boss(pr.damage)
+      elsif target.is_a?(Pylon)
+        damage_pylon(target, pr.damage)
       end
       sparks(pr.pos, pr.color, 5)
       add_light(pr.pos, 14, pr.color.map { |c| c / 255.0 }, 0.8, 0.12)
@@ -711,10 +1091,33 @@ class Game
 
   # ================================================================= messages / sound
 
-  def message(text, time)
+  MAX_MESSAGES = 3
+
+  # Shows a message for at least `time` seconds and long enough to read it
+  # (about 2.5 s plus 0.06 s per character). When the screen is full, the
+  # oldest unimportant message makes room first; important ones (briefing,
+  # key hints, escape instructions) are only dropped as a last resort.
+  def message(text, time, important = false)
     @messages.reject! { |m| m[:text] == text }
-    @messages << { text: text, time: time }
-    @messages.shift while @messages.size > 3
+    time = [time, 2.5 + text.size * 0.06].max
+    @messages << { text: text, time: time, important: important }
+    while @messages.size > MAX_MESSAGES
+      victim = @messages.find { |m| !m[:important] } || @messages.first
+      @messages.delete(victim)
+    end
+  end
+
+  # What the player should do next, shown permanently in the HUD.
+  def current_objective
+    return 'ESCAPE! Follow the green lights to the exit' if @countdown
+    kind = @level.doors.values.find { |k| k != :exit }
+    return(@keys[kind] ? "Open the #{kind.to_s.upcase} door" : "Find the #{kind.to_s.upcase} key") if kind
+    if @boss
+      return "Destroy the shield pylons (#{@pylons.size} left)" unless @pylons.empty?
+      return 'Destroy the Warden'
+    end
+    return 'Destroy the reactor' if @reactor && !@reactor.destroyed
+    ''
   end
 
   def play(name, gain = 0.5, pos = nil)
@@ -757,24 +1160,29 @@ class Game
     @automap.update(args.inputs)
 
     markers = []
-    if !@reactor.destroyed && @automap.explored?(@reactor.pos)
+    if @reactor && !@reactor.destroyed && @automap.explored?(@reactor.pos)
       markers << [@reactor.pos, [255, 150, 40], 6]
     end
+    @pylons.each { |p| markers << [p.pos, MAP_COLORS[:pylon], 3] if @automap.explored?(p.pos) }
+    markers << [@boss.pos, MAP_COLORS[:boss], 7] if @boss && @automap.explored?(@boss.pos)
     @pickups.each do |pk|
       next unless pk.kind == :blue_key || pk.kind == :red_key
       next unless @automap.explored?(pk.pos)
       markers << [pk.pos, pk.kind == :blue_key ? [70, 130, 255] : [255, 70, 70], 2.5]
     end
+    @level.beacons.each { |p| markers << [p, MAP_COLORS[:exit], 2.5] } if @countdown
     @automap.render(args.outputs, @ship.pose, markers)
 
     out = args.outputs.primitives
     label(out, 640, 700, 'AUTOMAP', 30, [255, 230, 60], 0.5)
     label(out, 640, 22, 'Mouse / arrows / A D rotate    W S / wheel zoom    TAB close', 18, [170, 170, 190], 0.5)
     label(out, 20, 700, 'You', 18, [255, 230, 60])
-    label(out, 20, 676, 'Blue door / key', 18, MAP_COLORS[:blue])
-    label(out, 20, 652, 'Red door / key', 18, MAP_COLORS[:red])
-    label(out, 20, 628, 'Escape hatch', 18, MAP_COLORS[:exit])
-    label(out, 20, 604, 'Reactor', 18, [255, 150, 40]) unless @reactor.destroyed
+    legend = [['Blue door / key', MAP_COLORS[:blue]], ['Yellow door / key', MAP_COLORS[:yellow]],
+              ['Red door / key', MAP_COLORS[:red]], ['Escape route', MAP_COLORS[:exit]]]
+    legend << ['Reactor', [255, 150, 40]] if @reactor && !@reactor.destroyed
+    legend << ['Shield pylon', MAP_COLORS[:pylon]] unless @pylons.empty?
+    legend << ['The Warden', MAP_COLORS[:boss]] if @boss
+    legend.each_with_index { |(text, col), n| label(out, 20, 676 - n * 24, text, 18, col) }
     if @countdown
       label(out, 1260, 700, format('SELF DESTRUCT  %02d', @countdown.ceil), 24, [255, 60, 40], 1)
     end
@@ -790,26 +1198,58 @@ class Game
     @projectiles.each do |pr|
       lights << { pos: pr.pos, radius: 12, color: pr.color.map { |c| c / 255.0 }, intensity: 0.5 }
     end
-    lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(8)
-
     r = @renderer
+    # a light matters as soon as its light can reach walls within view, so
+    # distant lamps light their walls from the moment their glow shows
+    reach = r.view_distance
+    [flare_lights, beacon_lights, @level.lamps].each do |list|
+      list.each { |l| lights << l if V.dist2(l[:pos], pos) < (reach + l[:radius])**2 }
+    end
+    lights = lights.sort_by { |l| V.dist2(l[:pos], pos) }.first(D3D::Native.enabled? ? MAX_LIGHTS_NATIVE : MAX_LIGHTS)
+
+    adapt_headlight(r, pos)
     r.begin_frame(View.new(pos, right, up, fwd), lights: lights, ambient_boost: boost)
     r.draw_grid(@level.grid)
 
     @robots.each do |rb|
-      next unless V.dist2(rb.pos, pos) < r.fog**2
+      next unless V.dist2(rb.pos, pos) < r.view_distance**2
       next unless @level.los?(pos, rb.pos, 3.0)
       rgt, u = V.basis_from_forward(rb.fwd)
       flash = rb.hit_flash > 0 ? 0.7 : 0.0
-      r.draw_mesh(MESHES[rb.kind], rb.pos, rgt, u, rb.fwd, 1.0, @level.tint_at(rb.pos), flash)
-      eye = V.madd(rb.pos, rb.fwd, rb.kind == :brute ? 2.2 : 2.0)
-      r.draw_glow(eye, 1.6, 255, 80, 60, 200)
+      light = light_near(rb.pos, lights)
+      draw_robot(r, rb, rgt, u, light, flash)
     end
 
     render_reactor(r, pos)
+    render_boss(r, pos, lights)
+
+    flare_lights.each do |f|
+      next unless V.dist2(f[:pos], pos) < r.view_distance**2
+      next unless @level.los?(pos, f[:pos], 3.0)
+      r.draw_glow(f[:pos], 7.0 * f[:glow], 255, 200, 120, 210)
+      r.draw_glow(f[:pos], 1.8, 255, 250, 230)
+    end
+
+    # beacon glows show beyond the fog so they can be spotted across big rooms
+    beacon_lights.each do |b|
+      next unless V.dist2(b[:pos], pos) < 260**2
+      next unless @level.los?(pos, b[:pos], 3.0)
+      # keep far beacons about as big on screen as one ~70 units away
+      grow = [Math.sqrt(V.dist2(b[:pos], pos)) / 70.0, 1.0].max
+      r.draw_glow(b[:pos], 9.0 * b[:pulse] * grow, 90, 255, 120, 200)
+      r.draw_glow(b[:pos], 2.0, 220, 255, 220)
+    end
+
+    @level.lamps.each do |lamp|
+      next unless V.dist2(lamp[:pos], pos) < r.view_distance**2
+      next unless @level.los?(pos, lamp[:pos], 3.0)
+      c = lamp[:rgb]
+      r.draw_glow(lamp[:pos], 6.0, c[0], c[1], c[2], 170)
+      r.draw_glow(lamp[:pos], 1.6, 255, 255, 255)
+    end
 
     @pickups.each do |pk|
-      next unless V.dist2(pk.pos, pos) < 90**2
+      next unless V.dist2(pk.pos, pos) < r.view_distance**2
       next unless @level.los?(pos, pk.pos, 3.0)
       pk.phase += DT
       a = pk.phase * 2
@@ -817,7 +1257,8 @@ class Game
       rgt, u = V.basis_from_forward(fwd2)
       p = V.add(pk.pos, [0, Math.sin(pk.phase * 2) * 0.6, 0])
       mesh = MESHES[pk.kind]
-      r.draw_mesh(mesh, p, rgt, u, fwd2, 1.0, [1.2, 1.2, 1.2])
+      light = light_near(p, lights)
+      r.draw_mesh(mesh, p, rgt, u, fwd2, 1.0, light.map { |c| c + 0.4 }, 0.0, ambient: mesh_ambient(light))
       col = mesh.tris[0].color
       r.draw_glow(p, 5.5, col[0], col[1], col[2], 120)
     end
@@ -844,9 +1285,97 @@ class Game
     r.flush(args.outputs)
   end
 
+  def draw_robot(r, rb, rgt, u, light, flash)
+    amb = mesh_ambient(light)
+    case rb.kind
+    when :turret
+      base_fwd, base_right = V.basis_from_forward(rb.mount) # any direction along the wall
+      r.draw_mesh(MESHES[:turret_base], rb.pos, base_right, rb.mount, base_fwd, 1.0, light, flash, ambient: amb)
+      gun_pos = V.madd(rb.pos, rb.mount, 0.9)
+      r.draw_mesh(MESHES[:turret_gun], gun_pos, rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_glow(V.madd(gun_pos, rb.fwd, 2.6), 1.4, 255, 150, 40, 200)
+    when :splitter
+      gap = (1.0 - rb.hp / rb.max_hp.to_f) * 2.4
+      r.draw_mesh(MESHES[:splitter_left], V.madd(rb.pos, rgt, -gap), rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_mesh(MESHES[:splitter_right], V.madd(rb.pos, rgt, gap), rgt, u, rb.fwd, 1.0, light, flash, ambient: amb)
+      r.draw_glow(rb.pos, 2.5 + gap * 3.0, 120, 255, 230, 190) if gap > 0.05
+      r.draw_glow(V.madd(rb.pos, rb.fwd, 2.2), 1.4, 255, 80, 60, 200)
+    else
+      mesh = rb.kind == :mini ? MESHES[:hunter] : MESHES[rb.kind]
+      r.draw_mesh(mesh, rb.pos, rgt, u, rb.fwd, rb.scale, light, flash, ambient: amb)
+      eye = V.madd(rb.pos, rb.fwd, (rb.kind == :brute ? 2.2 : 2.0) * rb.scale)
+      r.draw_glow(eye, 1.6 * rb.scale, 255, 80, 60, 200)
+    end
+  end
+
+  # Dims the headlight smoothly while the camera is inside a dark room, so
+  # flares are needed there even close to the walls.
+  def adapt_headlight(r, pos)
+    dark = @level.tint_at(pos).max < DARK_LEVEL ? 1.0 : 0.0
+    @darkness = (@darkness || 0.0) + (dark - (@darkness || 0.0)) * 0.08
+    r.headlight = HEADLIGHT[0] + (DARK_HEADLIGHT[0] - HEADLIGHT[0]) * @darkness
+    r.headlight_range = HEADLIGHT[1] + (DARK_HEADLIGHT[1] - HEADLIGHT[1]) * @darkness
+  end
+
+  # Light reaching an object: its room's light plus nearby flares, lamps, shots
+  # and explosions (0..~1.5 per channel).
+  def light_near(p, lights)
+    l = @level.tint_at(p).dup
+    lights.each do |lt|
+      rad = lt[:radius]
+      d2 = V.dist2(lt[:pos], p)
+      next if d2 >= rad * rad
+      k = (1.0 - Math.sqrt(d2) / rad) * lt[:intensity]
+      c = lt[:color]
+      l[0] += c[0] * k
+      l[1] += c[1] * k
+      l[2] += c[2] * k
+    end
+    l
+  end
+
+  # Objects keep the old minimum brightness in lit rooms but fade into the dark.
+  def mesh_ambient(light)
+    clamp(light.max, 0.03, 0.6)
+  end
+
+  # Pulsing green lights along the escape route while the countdown runs.
+  def beacon_lights
+    return [] unless @countdown
+    pulse = 0.75 + 0.25 * Math.sin(@play_time * 6)
+    @level.beacons.map do |p|
+      { pos: p, radius: 60, color: [0.3, 1.0, 0.45], intensity: 1.1 * pulse, pulse: pulse }
+    end
+  end
+
+  def render_boss(r, cam, lights)
+    @pylons.each do |p|
+      next unless V.dist2(p.pos, cam) < r.view_distance**2 && @level.los?(cam, p.pos, 3.0)
+      spin = p.phase * 0.8
+      fwd = [Math.sin(spin), 0.0, Math.cos(spin)]
+      rgt, u = V.basis_from_forward(fwd)
+      light = light_near(p.pos, lights)
+      r.draw_mesh(MESHES[:pylon], p.pos, rgt, u, fwd, 1.0, light, p.hit_flash > 0 ? 0.6 : 0.0, ambient: mesh_ambient(light))
+      pulse = 0.8 + 0.2 * Math.sin(p.phase * 4)
+      r.draw_glow(V.madd(p.pos, [0.0, 1.0, 0.0], 1.0), 9.0 * pulse, 90, 220, 255, 150)
+    end
+
+    b = @boss
+    return unless b && V.dist2(b.pos, cam) < r.view_distance**2 && @level.los?(cam, b.pos, 3.0)
+    rgt, u = V.basis_from_forward(b.fwd)
+    light = light_near(b.pos, lights)
+    r.draw_mesh(MESHES[:warden], b.pos, rgt, u, b.fwd, 1.0, light, b.hit_flash > 0 ? 0.5 : 0.0,
+                ambient: mesh_ambient(light))
+    r.draw_glow(b.pos, 7.0 + Math.sin(b.phase * 3) * 1.0, 255, 80, 210, 140)
+    return unless boss_shielded?
+    shield = 95 + (b.shield_flash > 0 ? 130 : 0) + (Math.sin(b.phase * 2) * 25).to_i
+    r.draw_glow(b.pos, 24.0, 70, 150, 255, shield)
+    r.draw_glow(b.pos, 15.0, 120, 190, 255, shield / 2)
+  end
+
   def render_reactor(r, cam)
     rc = @reactor
-    return unless V.dist2(rc.pos, cam) < 140**2
+    return unless rc && V.dist2(rc.pos, cam) < r.view_distance**2
     ang = rc.spin * 0.6
     fwd = [Math.sin(ang), 0.0, Math.cos(ang)]
     right, up = V.basis_from_forward(fwd)
@@ -894,7 +1423,7 @@ class Game
     label(out, 640, 44, 'MISSILES', 16, [170, 170, 190], 0.5)
     label(out, 640, 22, s.missiles.to_s, 26, [255, 110, 90], 0.5)
     label(out, 780, 44, 'KEYS', 16, [170, 170, 190])
-    { blue: [60, 120, 255], red: [240, 60, 60] }.each_with_index do |(k, col), n|
+    KEY_COLORS.each_with_index do |(k, col), n|
       x = 780 + n * 34
       if @keys[k]
         out << { x: x, y: 10, w: 26, h: 20, r: col[0], g: col[1], b: col[2], path: :solid, primitive_marker: :sprite }
@@ -902,15 +1431,18 @@ class Game
         out << { x: x, y: 10, w: 26, h: 20, r: col[0], g: col[1], b: col[2], primitive_marker: :border }
       end
     end
+    label(out, 20, 700, "LEVEL #{@level_index + 1}  #{@level.defn::TITLE.upcase}", 16, [150, 150, 170])
+    objective = current_objective
+    label(out, 20, 676, "> #{objective}", 18, @countdown ? [120, 255, 150] : [255, 220, 140]) unless objective.empty?
     label(out, 920, 44, 'SHIPS', 16, [170, 170, 190])
     label(out, 920, 22, [@lives, 0].max.to_s, 26, [255, 255, 255])
     label(out, 1250, 44, 'SCORE', 16, [170, 170, 190], 1)
     label(out, 1250, 22, @score.to_s, 26, [255, 255, 255], 1)
 
-    reactor_hp = @reactor.destroyed ? 0 : @reactor.hp
-    if !@reactor.destroyed && @reactor.hp < 400
-      label(out, 640, 690, "REACTOR INTEGRITY #{(reactor_hp / 4.0).ceil}%", 20, [255, 170, 60], 0.5)
+    if @reactor && !@reactor.destroyed && @reactor.hp < 400
+      label(out, 640, 690, "REACTOR INTEGRITY #{(@reactor.hp / 4.0).ceil}%", 20, [255, 170, 60], 0.5)
     end
+    render_boss_hud(out) if @boss
 
     if @countdown
       secs = @countdown.ceil
@@ -926,6 +1458,21 @@ class Game
     unless s.alive
       label(out, 640, 380, 'SHIP DESTROYED', 48, [255, 90, 60], 0.5)
     end
+  end
+
+  # Pylons left while the Warden is shielded; its health bar once you've met it.
+  def render_boss_hud(out)
+    if @boss.last_seen
+      x = 440
+      col = boss_shielded? ? [110, 170, 255] : [255, 90, 230]
+      label(out, 640, 698, boss_shielded? ? 'THE WARDEN  (SHIELDED)' : 'THE WARDEN', 16, col, 0.5)
+      out << { x: x, y: 676, w: 400, h: 12, r: 40, g: 30, b: 50, path: :solid, primitive_marker: :sprite }
+      w = (400 * @boss.hp / Boss::MAX_HP.to_f).to_i
+      out << { x: x, y: 676, w: w, h: 12, r: col[0], g: col[1], b: col[2], path: :solid, primitive_marker: :sprite }
+    end
+    return unless boss_shielded?
+    y = @boss.last_seen ? 656 : 690
+    label(out, 640, y, "SHIELD PYLONS  #{@pylons.size} / #{@pylon_total}", 18, MAP_COLORS[:pylon], 0.5)
   end
 
   def gauge(out, x, y, name, value, max, col)
@@ -946,14 +1493,14 @@ class Game
     out = args.outputs.primitives
     out << { x: 0, y: 0, w: 1280, h: 720, r: 0, g: 0, b: 0, a: 150, path: :solid, primitive_marker: :sprite }
     label(out, 640, 420, 'PAUSED', 64, [255, 255, 255], 0.5)
+    label(out, 640, 500, "Objective: #{current_objective}", 24, [255, 220, 140], 0.5) unless current_objective.empty?
     label(out, 640, 340, 'ESC or click to resume   -   T to quit to title', 24, [200, 200, 210], 0.5)
     kb = args.inputs.keyboard
     if kb.key_down.escape || args.inputs.mouse.click || args.inputs.controller_one.key_down.start
       @state = :playing
       grab_mouse(true)
     elsif kb.key_down.t
-      @state = :title
-      setup_level
+      back_to_title
     end
   end
 
@@ -963,12 +1510,32 @@ class Game
     out << { x: 0, y: 0, w: 1280, h: 720, r: won ? 0 : 40, g: 0, b: 0, a: 170, path: :solid, primitive_marker: :sprite }
     label(out, 640, 470, won ? 'MINE ESCAPED!' : 'GAME OVER', 72, won ? [120, 255, 140] : [255, 80, 60], 0.5)
     label(out, 640, 390, @end_reason.to_s, 26, [230, 230, 240], 0.5)
-    label(out, 640, 340, "Score #{@score}    Robots destroyed #{@kills}    Time #{@play_time.to_i}s", 24,
+    label(out, 640, 340, "Score #{@score}    Robots destroyed #{@total_kills}    Time #{@total_time.to_i}s", 24,
           [255, 220, 140], 0.5)
     label(out, 640, 250, 'Press ENTER to return to the title screen', 24, [200, 200, 210], 0.5)
-    if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
-      @state = :title
-      setup_level
+    back_to_title if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
+  end
+
+  def render_intermission
+    out = args.outputs.primitives
+    out << { x: 0, y: 0, w: 1280, h: 720, r: 0, g: 10, b: 20, a: 190, path: :solid, primitive_marker: :sprite }
+    label(out, 640, 560, "LEVEL #{@level_index + 1} COMPLETE", 64, [120, 255, 140], 0.5)
+    label(out, 640, 500, @level.defn::TITLE, 28, [200, 210, 230], 0.5)
+    rows = [
+      ['Robots destroyed', @kills.to_s],
+      ['Time', "#{@play_time.to_i}s"],
+      ["Escape bonus (#{@escape_time.round(1)}s left)", "+#{@escape_bonus}"],
+      ['Shield bonus', "+#{@shield_bonus}"],
+      ['Score', @score.to_s]
+    ]
+    rows.each_with_index do |(k, v), n|
+      y = 420 - n * 36
+      label(out, 620, y, k, 24, [200, 200, 210], 1)
+      label(out, 660, y, v, 24, n == rows.size - 1 ? [255, 220, 140] : [255, 255, 255])
     end
+    nxt = Levels::ALL[@level_index + 1]
+    label(out, 640, 170, "Next: level #{@level_index + 2}, #{nxt::TITLE}", 26, [255, 200, 120], 0.5)
+    label(out, 640, 120, 'Press ENTER to continue', 24, [200, 200, 210], 0.5)
+    next_level if args.inputs.keyboard.key_down.enter || args.inputs.controller_one.key_down.start
   end
 end

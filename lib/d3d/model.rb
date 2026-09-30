@@ -1,12 +1,18 @@
 module D3D
   class Model
     attr_accessor :mesh, :texture, :position, :rotation, :scale
+    # Pixel size of the texture as Integer (square) or [w, h]. Mesh uvs are
+    # 0..1 and DragonRuby wants pixels, so the renderer scales by it; when
+    # nil, the renderer asks DragonRuby for the image size.
+    attr_accessor :texture_size
     attr_accessor :color, :visible
     attr_reader :model_matrix, :model_matrix_dirty
 
-    def initialize(mesh:, texture: nil, position: nil, rotation: nil, scale: nil, color: nil)
+    def initialize(mesh:, texture: nil, position: nil, rotation: nil, scale: nil, color: nil,
+                   texture_size: nil)
       @mesh = mesh
       @texture = texture
+      @texture_size = texture_size
       @position = position || Vec3.new(0, 0, 0)
       @rotation = rotation || Vec3.new(0, 0, 0)
       @scale = scale || Vec3.new(1, 1, 1)

@@ -17,7 +17,7 @@ module D3D
           line = line.strip
           next if line.empty? || line.start_with?('#')
 
-          parts = line.split(/\s+/)
+          parts = line.split
           type = parts[0]
 
           case type
