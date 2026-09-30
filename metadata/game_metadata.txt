@@ -3,7 +3,7 @@
 
 devid=todo-change-me
 devtitle=My Name &lt;todo@example.com&gt;
-gameid=descent
+gameid=core_breach
 gametitle=Core Breach
 version=0.1.0
 icon=metadata/icon.png

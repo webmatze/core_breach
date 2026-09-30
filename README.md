@@ -53,8 +53,8 @@ You need [DragonRuby GTK](https://dragonruby.org/). The project pins DragonRuby
 Pro 7.13 in `Smaug.toml`, and any recent DragonRuby should run it.
 
 ```bash
-git clone https://github.com/webmatze/descent.git
-cd descent
+git clone https://github.com/webmatze/core_breach.git
+cd core_breach
 smaug run            # with Smaug
 # or
 dragonruby .         # with the DragonRuby binary on your PATH
