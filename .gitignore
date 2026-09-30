@@ -4,5 +4,5 @@ exceptions/
 .DS_Store
 errors/
 
-# Built d3d C extension (tools/build_ext.sh); only the source is committed
+# D3D Pro C extension libraries: licensed separately, never committed
 native/

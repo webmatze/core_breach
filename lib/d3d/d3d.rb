@@ -1,4 +1,5 @@
 module D3D
+  VERSION = '1.0.0'
   SCREEN_WIDTH = 1280
   SCREEN_HEIGHT = 720
 end

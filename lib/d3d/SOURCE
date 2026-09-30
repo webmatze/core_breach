@@ -1,4 +1,4 @@
 Vendored copy of the d3d engine. Do not edit here; change d3d and re-run tools/sync_d3d.sh.
 repository: https://github.com/webmatze/d3d
 branch: master
-commit: 918ded7
+commit: 542018d

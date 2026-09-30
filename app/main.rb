@@ -5,8 +5,8 @@ require 'lib/d3d/d3d.rb'
 # (frame time spikes); incremental mode spreads the work and is faster too.
 GC.generational_mode = false if GC.respond_to?(:generational_mode=)
 
-# Optional d3d C extension (DragonRuby Pro, built with tools/build_ext.sh);
-# the engine falls back to pure Ruby when it isn't available.
+# Optional C extension from D3D Pro (its native/ folder copied into the game);
+# the engine falls back to pure Ruby when it isn't there.
 D3D::Native.load
 
 # Short names for the engine helpers used throughout the game.

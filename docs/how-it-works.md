@@ -51,7 +51,7 @@ Colour is computed once per sub-quad (flat shading) and applied through the spri
 
 - the room's tint × direction shade
 - plus a **headlight** term that falls off within 60 units
-- × **fog**. The pure Ruby renderer uses a linear fog that fades to black by distance 140, which also works as the draw-distance cutoff. With the C extension, an exponential fog darkens about as quickly near the camera but only fades out (~20% brightness left at 140, ~4% at 280), and cells are drawn up to 400 units away.
+- × **fog**. The pure Ruby renderer uses a linear fog that fades to black by distance 140, which also works as the draw-distance cutoff. With the D3D Pro C extension, an exponential fog darkens about as quickly near the camera but only fades out (~20% brightness left at 140, ~4% at 280), and cells are drawn up to 400 units away.
 - plus **dynamic point lights** (laser bolts, muzzle flashes, explosions), each with a linear falloff, plus wall lamps and flares. A light is used once it can reach walls within view; the nearest 8 are used by the pure Ruby renderer, up to 32 with the C extension.
 - plus a global "boost", which drives the red alarm pulse during the countdown.
 

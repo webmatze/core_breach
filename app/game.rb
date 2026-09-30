@@ -20,7 +20,7 @@ class Game
   HEADLIGHT       = [0.7, 60.0]
   DARK_HEADLIGHT  = [0.05, 16.0]
   DARK_LEVEL      = 0.2
-  # Walls darken over FOG either way. With d3d's C extension the view reaches
+  # Walls darken over FOG either way. With the D3D Pro C extension the view reaches
   # VIEW_NATIVE and the exponential fog lets far cells fade out slowly; the
   # Ruby fallback keeps the linear fog that ends at FOG.
   FOG             = 140

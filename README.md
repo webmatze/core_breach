@@ -62,14 +62,13 @@ dragonruby .         # with the DragonRuby binary on your PATH
 
 ### Performance and the optional C extension
 
-d3d has an optional C extension (DragonRuby Pro) for its hot loops: cell-grid
-visibility, wall faces and the depth sort. Build it once per machine:
+The game runs on the free, pure Ruby version of d3d. [D3D Pro](https://webmatze.itch.io/d3d-pro)
+adds a C extension for the engine's hot loops: cell-grid visibility, wall faces
+and the depth sort. It isn't part of this repository. If you have D3D Pro, copy
+its `native/` folder into the game directory (next to `app/`); a DragonRuby
+license that allows C extensions is needed to ship it.
 
-```bash
-tools/build_ext.sh   # -> native/macos/d3d_ext.dylib (or native/linux-*/d3d_ext.so)
-```
-
-The game loads it at startup. With it, you can see 400 units instead of 140,
+The game loads the extension at startup when it's there. With it, you can see 400 units instead of 140,
 and far walls fade slowly into the dark instead of ending in black. Without it,
 everything runs in pure Ruby with the shorter view. `F1` shows the frame rate,
 the triangle count and which path is active. Render time per frame, measured
@@ -80,7 +79,7 @@ headless over 150 camera positions per level:
 | With C extension | 400 | ~0.9 ms | ~1.3 ms |
 | Pure Ruby | 140 | ~4.9 ms | ~6.6 ms |
 
-The build output in `native/` isn't committed.
+`native/` is in `.gitignore`, so the extension is never committed.
 
 ## Controls
 
@@ -155,7 +154,7 @@ is in [docs/how-it-works.md](docs/how-it-works.md).
 ## Project layout
 
 ```
-app/main.rb              entry point: loads d3d and its optional C extension
+app/main.rb              entry point: loads d3d and the optional D3D Pro C extension
 app/game.rb              game flow, flight, weapons, robot AI, boss, HUD, menus
 app/entities.rb          ship, robots, boss, pylons, projectiles, pickups
 app/level.rb             wraps a D3D::CellGrid with doors, exits, spawns and lamps
@@ -166,7 +165,7 @@ app/levels/
 app/meshes.rb            robot, boss, reactor and pickup models (D3D::FlatMesh)
 lib/d3d/                 the d3d engine, vendored unchanged (see lib/d3d/SOURCE)
 sprites/, sounds/        generated assets (see tools/generate_assets.py)
-tools/                   asset generator, engine sync, C extension build, screenshots
+tools/                   asset generator, engine sync, screenshots
 docs/                    how the engine works, level plans, screenshots
 ```
 
@@ -175,7 +174,6 @@ docs/                    how the engine works, level plans, screenshots
 ```bash
 python3 tools/generate_assets.py   # regenerate every texture and sound
 tools/sync_d3d.sh [../d3d]         # copy the d3d engine into lib/d3d
-tools/build_ext.sh                 # build d3d's C extension into native/
 ruby tools/screenshots.rb          # headless staged scenes -> docs/screenshots/*.jpg
 ```
 
